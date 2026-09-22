@@ -53,6 +53,10 @@ REQUIRED_WEATHER_VALUES = (
 )
 
 
+class RequestValidationError(ValueError):
+    """A request cannot be represented by the supported AquaCrop contract."""
+
+
 def simulation_end_for_planting(planting_date: date) -> tuple[date, bool]:
     """Return the supported recurring-calendar end and adjustment flag."""
 
@@ -259,6 +263,21 @@ class AquaCropAdapter:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def validate(self, request: SimulationRequest) -> None:
+        try:
+            self._validate_request(request)
+            json.dumps(
+                _plain_request(request),
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        except RequestValidationError:
+            raise
+        except (TypeError, ValueError) as exc:
+            raise RequestValidationError(str(exc)) from exc
+
+    def _validate_request(self, request: SimulationRequest) -> None:
         parameters = dict(request.model_parameters)
         installed_version = importlib.metadata.version("aquacrop")
         requested_version = str(parameters.get("model_version", self.version))
@@ -408,8 +427,8 @@ class AquaCropAdapter:
             minimum=0.0,
             maximum=1.0,
         )
-        if moisture_fraction >= 1:
-            raise ValueError("grain_standard_moisture_fraction must be in [0, 1)")
+        if not math.isclose(moisture_fraction, 0.155, abs_tol=1e-12):
+            raise ValueError("grain_standard_moisture_fraction must equal 0.155")
         try:
             soil = Soil(
                 _soil_type(request, parameters),
@@ -453,7 +472,7 @@ class AquaCropAdapter:
         started = time.perf_counter()
         try:
             self.validate(request)
-        except Exception as exc:
+        except RequestValidationError as exc:
             return SimulationResult(
                 request_id=request.request_id,
                 adapter_name=self.name,
@@ -465,8 +484,45 @@ class AquaCropAdapter:
                 },
                 failure_reason=str(exc),
             )
+        except Exception as exc:
+            return SimulationResult(
+                request_id=request.request_id,
+                adapter_name=self.name,
+                adapter_version=self.version,
+                status=RunStatus.EXECUTION_FAILED,
+                diagnostics={
+                    "cache_hit": False,
+                    "traceback": traceback.format_exc(),
+                },
+                failure_reason=str(exc),
+            )
 
-        key = self.cache_key(request)
+        try:
+            key = self.cache_key(request)
+        except (TypeError, ValueError) as exc:
+            return SimulationResult(
+                request_id=request.request_id,
+                adapter_name=self.name,
+                adapter_version=self.version,
+                status=RunStatus.INVALID_INPUT,
+                diagnostics={
+                    "cache_hit": False,
+                    "traceback": traceback.format_exc(),
+                },
+                failure_reason=str(exc),
+            )
+        except Exception as exc:
+            return SimulationResult(
+                request_id=request.request_id,
+                adapter_name=self.name,
+                adapter_version=self.version,
+                status=RunStatus.EXECUTION_FAILED,
+                diagnostics={
+                    "cache_hit": False,
+                    "traceback": traceback.format_exc(),
+                },
+                failure_reason=str(exc),
+            )
         save_daily = bool(request.model_parameters.get("save_daily", False))
         paths = (
             _cache_paths(request.output_dir, key)
@@ -489,7 +545,7 @@ class AquaCropAdapter:
                 ):
                     diagnostics = dict(cached.diagnostics)
                     diagnostics["cache_hit"] = True
-                    return SimulationResult(
+                    result = SimulationResult(
                         request_id=request.request_id,
                         adapter_name=cached.adapter_name,
                         adapter_version=cached.adapter_version,
@@ -499,6 +555,8 @@ class AquaCropAdapter:
                         diagnostics=diagnostics,
                         failure_reason=cached.failure_reason,
                     )
+                    _atomic_json(paths["summary"], result.to_json_dict())
+                    return result
 
         try:
             status, summary, daily, crop_values, soil_profile = self._run_model(request)

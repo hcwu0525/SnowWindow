@@ -18,6 +18,7 @@ from snowwindow.domain import (
 )
 from snowwindow.models.aquacrop import (
     AquaCropAdapter,
+    default_adapter_registry,
     map_crop_state,
     map_exception_status,
     reference_et,
@@ -168,6 +169,12 @@ def test_cache_key_excludes_output_location_and_save_daily(tmp_path) -> None:
     assert adapter.cache_key(changed) != adapter.cache_key(base)
 
 
+def test_default_registry_resolves_aquacrop_adapter() -> None:
+    adapter = default_adapter_registry().get("aquacrop")
+
+    assert isinstance(adapter, AquaCropAdapter)
+
+
 def test_validate_accepts_supported_complete_request() -> None:
     AquaCropAdapter().validate(_request())
 
@@ -238,7 +245,7 @@ def test_validate_accepts_supported_complete_request() -> None:
         (
             lambda request: replace(
                 request,
-                model_parameters={"grain_standard_moisture_fraction": 1.0},
+                model_parameters={"grain_standard_moisture_fraction": 0.2},
             ),
             "grain_standard_moisture_fraction",
         ),
@@ -290,6 +297,29 @@ def test_run_returns_invalid_input_instead_of_raising() -> None:
     assert result.status is RunStatus.INVALID_INPUT
     assert result.failure_reason
     assert result.summary == {}
+
+
+def test_run_returns_invalid_input_for_non_serializable_request_content() -> None:
+    invalid = replace(_request(), model_parameters={"future_option": object()})
+
+    result = AquaCropAdapter().run(invalid)
+
+    assert result.status is RunStatus.INVALID_INPUT
+    assert result.failure_reason
+
+
+def test_unexpected_validation_failure_is_execution_failed(monkeypatch) -> None:
+    adapter = AquaCropAdapter()
+
+    def fail_validation(request) -> None:
+        raise RuntimeError("dependency failure")
+
+    monkeypatch.setattr(adapter, "validate", fail_validation)
+
+    result = adapter.run(_request())
+
+    assert result.status is RunStatus.EXECUTION_FAILED
+    assert result.failure_reason == "dependency failure"
 
 
 @pytest.mark.integration
@@ -364,6 +394,8 @@ def test_cached_scientific_result_uses_current_request_id(tmp_path) -> None:
 
     assert result.diagnostics["cache_hit"] is True
     assert result.request_id == "request-2"
+    persisted = json.loads(result.artifacts["summary"].read_text())
+    assert persisted["request_id"] == "request-2"
 
 
 @pytest.mark.integration

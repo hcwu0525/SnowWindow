@@ -39,3 +39,14 @@ No raw data, prior outputs, legacy `aquacrop_demo/` code, or legacy tests were m
 - `HIstart` crossing is a flowering proxy, not an independent pollen event.
 - AquaCrop 3.1.0 suppresses public imports when pytest receives a literal `-m`; adapter tests must be selected without pytest's `-m` option.
 - Model source fingerprinting hashes installed Python sources and therefore intentionally changes with the installed package contents.
+
+## Review fix round 1
+
+- Added a built-in registry that resolves `aquacrop`.
+- Added a typed request-validation boundary so invalid requests and unexpected
+  dependency failures retain distinct statuses.
+- Fixed the named 15.5%-moisture yield contract by rejecting other standard
+  moisture fractions.
+- Refreshes the cached summary atomically with the current request identity.
+- Added regression tests for all four review findings.
+- Full suite: 110 passed in 76.61 seconds; Ruff lint and format checks passed.
