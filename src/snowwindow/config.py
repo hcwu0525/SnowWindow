@@ -15,16 +15,18 @@ class ConfigError(ValueError):
     """Raised when an experiment configuration is invalid."""
 
 
+def _freeze_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _frozen_mapping(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_value(item) for item in value)
+    return value
+
+
 def _frozen_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    frozen: dict[str, Any] = {}
-    for key, item in value.items():
-        if isinstance(item, Mapping):
-            frozen[str(key)] = _frozen_mapping(item)
-        elif isinstance(item, list):
-            frozen[str(key)] = tuple(item)
-        else:
-            frozen[str(key)] = item
-    return MappingProxyType(frozen)
+    return MappingProxyType(
+        {str(key): _freeze_value(item) for key, item in value.items()}
+    )
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,12 @@ def _nonempty_string(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{name} must be a nonempty string")
     return value.strip()
+
+
+def _boolean(value: Any, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{name} must be a boolean")
+    return value
 
 
 def _years(value: Any, name: str) -> tuple[int, ...]:
@@ -182,12 +190,17 @@ def load_config(path: Path) -> ExperimentConfig:
         calibration_years=calibration_years,
         evaluation_years=evaluation_years,
         environments=environments,
-        all_eligible_environments=bool(
-            selection_data.get("all_eligible_environments", False)
+        all_eligible_environments=_boolean(
+            selection_data.get("all_eligible_environments", False),
+            "selection.all_eligible_environments",
         ),
-        allow_assumed_rainfed=bool(selection_data.get("allow_assumed_rainfed", False)),
-        exclude_default_soil_from_calibration=bool(
-            selection_data.get("exclude_default_soil_from_calibration", True)
+        allow_assumed_rainfed=_boolean(
+            selection_data.get("allow_assumed_rainfed", False),
+            "selection.allow_assumed_rainfed",
+        ),
+        exclude_default_soil_from_calibration=_boolean(
+            selection_data.get("exclude_default_soil_from_calibration", True),
+            "selection.exclude_default_soil_from_calibration",
         ),
         options=_extra_options(
             selection_data,
@@ -221,7 +234,10 @@ def load_config(path: Path) -> ExperimentConfig:
     simulation = SimulationConfig(
         scan_fractions=scan_fractions,
         workers=workers,
-        scan_all_dates=bool(simulation_data.get("scan_all_dates", False)),
+        scan_all_dates=_boolean(
+            simulation_data.get("scan_all_dates", False),
+            "simulation.scan_all_dates",
+        ),
         parameter_sets=MappingProxyType(parameter_sets),
         options=_extra_options(
             simulation_data,

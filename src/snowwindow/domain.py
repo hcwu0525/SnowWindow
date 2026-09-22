@@ -104,10 +104,6 @@ class StableRecord:
     def content_hash(self) -> str:
         return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
 
-    def __hash__(self) -> int:
-        digest = bytes.fromhex(self.content_hash())
-        return int.from_bytes(digest[:8], byteorder="big", signed=True)
-
 
 @dataclass(frozen=True)
 class WeatherRecord(StableRecord):
@@ -116,7 +112,7 @@ class WeatherRecord(StableRecord):
     values: Mapping[str, Any] = field(default_factory=dict)
     source: str = ""
 
-    __hash__ = StableRecord.__hash__
+    __hash__ = None
 
 
 @dataclass(frozen=True)
@@ -126,7 +122,7 @@ class SoilLayer(StableRecord):
     properties: Mapping[str, Any] = field(default_factory=dict)
     source: str = ""
 
-    __hash__ = StableRecord.__hash__
+    __hash__ = None
 
 
 @dataclass(frozen=True)
@@ -140,7 +136,7 @@ class Environment(StableRecord):
     soil: tuple[SoilLayer, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
-    __hash__ = StableRecord.__hash__
+    __hash__ = None
 
 
 @dataclass(frozen=True)
@@ -153,7 +149,7 @@ class ManagementUnit(StableRecord):
     irrigation_assumption: str = "unknown"
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
-    __hash__ = StableRecord.__hash__
+    __hash__ = None
 
 
 @dataclass(frozen=True)
@@ -167,7 +163,7 @@ class Observation(StableRecord):
     source_ids: tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
-    __hash__ = StableRecord.__hash__
+    __hash__ = None
 
 
 @dataclass(frozen=True)
@@ -181,7 +177,7 @@ class SimulationRequest(StableRecord):
     parameter_set_id: str = "default"
     output_dir: Path | None = None
 
-    __hash__ = StableRecord.__hash__
+    __hash__ = None
 
 
 @dataclass(frozen=True)
@@ -195,4 +191,4 @@ class SimulationResult(StableRecord):
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
     failure_reason: str | None = None
 
-    __hash__ = StableRecord.__hash__
+    __hash__ = None

@@ -24,6 +24,7 @@ selection:
   environments: [INH1_2022, INH1_2023]
   calibration_years: [2022]
   evaluation_years: [2023]
+  all_eligible_environments: false
   allow_assumed_rainfed: true
   exclude_default_soil_from_calibration: true
 simulation:
@@ -83,6 +84,68 @@ def test_load_config_rejects_invalid_values(
 
     with pytest.raises(ConfigError, match=message):
         load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "valid_line", "invalid_line"),
+    [
+        (
+            "selection.all_eligible_environments",
+            "all_eligible_environments: false",
+            'all_eligible_environments: "false"',
+        ),
+        (
+            "selection.allow_assumed_rainfed",
+            "allow_assumed_rainfed: true",
+            'allow_assumed_rainfed: "false"',
+        ),
+        (
+            "selection.exclude_default_soil_from_calibration",
+            "exclude_default_soil_from_calibration: true",
+            'exclude_default_soil_from_calibration: "false"',
+        ),
+        (
+            "simulation.scan_all_dates",
+            "scan_all_dates: true",
+            'scan_all_dates: "false"',
+        ),
+    ],
+)
+def test_load_config_rejects_non_boolean_settings(
+    tmp_path: Path, field_name: str, valid_line: str, invalid_line: str
+) -> None:
+    config_path = _write_config(
+        tmp_path / "invalid-boolean.yaml",
+        _valid_yaml().replace(valid_line, invalid_line),
+    )
+
+    with pytest.raises(ConfigError, match=field_name):
+        load_config(config_path)
+
+
+def test_load_config_recursively_freezes_nested_sequence_values(
+    tmp_path: Path,
+) -> None:
+    yaml_text = _valid_yaml().replace(
+        "    crop: Maize",
+        """
+    crop: Maize
+    cultivars:
+      - name: generic
+        coefficients:
+          - name: hi0
+            value: 0.48
+""".rstrip(),
+    )
+    config_path = _write_config(tmp_path / "nested.yaml", yaml_text)
+
+    config = load_config(config_path)
+    cultivars = config.model.parameters["cultivars"]
+
+    assert isinstance(cultivars, tuple)
+    assert isinstance(cultivars[0]["coefficients"], tuple)
+    with pytest.raises(TypeError):
+        cultivars[0]["coefficients"][0]["value"] = 0.5
 
 
 @pytest.mark.parametrize(

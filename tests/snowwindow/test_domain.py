@@ -97,7 +97,7 @@ def test_domain_records_serialize_to_json_compatible_values() -> None:
     assert result_dict["diagnostics"] == {"last_date": "2022-12-31"}
 
 
-def test_domain_records_are_deeply_immutable_and_hash_mapping_keys_stably() -> None:
+def test_domain_records_are_deeply_immutable_and_content_hash_keys_stably() -> None:
     first = _request(("phenology_scale", "hi0"))
     second = _request(("hi0", "phenology_scale"))
 
@@ -105,8 +105,26 @@ def test_domain_records_are_deeply_immutable_and_hash_mapping_keys_stably() -> N
         first.model_parameters["hi0"] = 0.5
 
     assert first == second
-    assert hash(first) == hash(second)
     assert first.content_hash() == second.content_hash()
+
+
+def test_equal_records_with_signed_zero_are_not_python_hashable() -> None:
+    negative_zero = WeatherRecord(
+        environment_id="INH1_2022",
+        date=date(2022, 5, 10),
+        values={"rain_mm": -0.0},
+    )
+    positive_zero = WeatherRecord(
+        environment_id="INH1_2022",
+        date=date(2022, 5, 10),
+        values={"rain_mm": 0.0},
+    )
+
+    assert negative_zero == positive_zero
+    with pytest.raises(TypeError, match="unhashable"):
+        hash(negative_zero)
+    with pytest.raises(TypeError, match="unhashable"):
+        hash(positive_zero)
 
 
 def test_run_status_contains_all_terminal_states() -> None:
