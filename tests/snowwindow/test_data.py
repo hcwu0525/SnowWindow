@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import platform
 from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import pyarrow
 import pytest
 
 from snowwindow.config import (
@@ -53,7 +55,12 @@ CORE_WEATHER = {
 }
 
 
-def _config(data_dir: Path, output_dir: Path) -> ExperimentConfig:
+def _config(
+    data_dir: Path,
+    output_dir: Path,
+    *,
+    simulation_options: dict[str, object] | None = None,
+) -> ExperimentConfig:
     return ExperimentConfig(
         experiment_id="fixture",
         data_dir=data_dir,
@@ -74,6 +81,7 @@ def _config(data_dir: Path, output_dir: Path) -> ExperimentConfig:
             scan_fractions=(1.0,),
             workers=1,
             scan_all_dates=True,
+            options=simulation_options or {"scan_horizon": "cross_year"},
         ),
         source_path=output_dir / "fixture.yaml",
     )
@@ -174,6 +182,22 @@ def _write_fixture_data(root: Path) -> None:
                 "Yield_Mg_ha": 10.0,
                 "Grain_Moisture": 15.5,
             },
+            {
+                "Env": "IAH1_2022",
+                "Year": 2022,
+                "Field_Location": "IAH1",
+                "Experiment": "EXP_A",
+                "Replicate": 2,
+                "Block": 1,
+                "Plot": 4,
+                "Hybrid": "C",
+                "Date_Planted": None,
+                "Date_Harvested": None,
+                "Pollen_DAP_days": None,
+                "Silk_DAP_days": None,
+                "Yield_Mg_ha": None,
+                "Grain_Moisture": None,
+            },
         ]
     ).to_csv(training / "1_Training_Trait_Data_2014_2023.csv", index=False)
     pd.DataFrame([_metadata_row("IAH1_2022", 2022, "IAH1")]).to_csv(
@@ -191,8 +215,15 @@ def _write_fixture_data(root: Path) -> None:
             }
         ]
     ).to_csv(training / "3_Training_Soil_Data_2015_2023.csv", index=False)
-    pd.DataFrame(_weather_rows("IAH1_2022", 2022)).to_csv(
-        training / "4_Training_Weather_Data_2014_2023_full_year.csv", index=False
+    pd.DataFrame(
+        _weather_rows("IAH1_2022", 2022) + _weather_rows("IAH1_2023", 2023)
+    ).to_csv(training / "4_Training_Weather_Data_2014_2023_full_year.csv", index=False)
+    pd.DataFrame(_weather_rows("IAH1_2022", 2022)[:2]).to_csv(
+        training / "4_Training_Weather_Data_2014_2023_seasons_only.csv",
+        index=False,
+    )
+    pd.DataFrame([{"Env": "IAH1_2022", "EC_feature": 1.0}]).to_csv(
+        training / "6_Training_EC_Data_2014_2023.csv", index=False
     )
 
     pd.DataFrame(
@@ -225,6 +256,12 @@ def _write_fixture_data(root: Path) -> None:
     ).to_csv(testing / "3_Testing_Soil_Data_2024.csv", index=False)
     pd.DataFrame(_weather_rows("IAH1_2024", 2024)).to_csv(
         testing / "4_Testing_Weather_Data_2024_full_year.csv", index=False
+    )
+    pd.DataFrame(_weather_rows("IAH1_2024", 2024)[:2]).to_csv(
+        testing / "4_Testing_Weather_Data_2024_seasons_only.csv", index=False
+    )
+    pd.DataFrame([{"Env": "IAH1_2024", "EC_feature": 2.0}]).to_csv(
+        testing / "6_Testing_EC_Data_2024.csv", index=False
     )
     pd.DataFrame([{"Env": "IAH1_2024", "Hybrid": "A", "Yield_Mg_ha": 8.0}]).to_csv(
         testing / "7_Testing_Observed_Values.csv", index=False
@@ -273,6 +310,21 @@ def test_training_natural_key_duplicate_is_rejected() -> None:
         validate_training_natural_keys(plots)
 
 
+@pytest.mark.parametrize("column", ["Env", "Experiment", "Replicate", "Block", "Plot"])
+def test_training_natural_key_null_component_is_rejected(column: str) -> None:
+    plot = {
+        "Env": "IAH1_2022",
+        "Experiment": "EXP",
+        "Replicate": 1,
+        "Block": 1,
+        "Plot": 7,
+    }
+    plot[column] = None
+
+    with pytest.raises(DataPreparationError, match="null training plot natural key"):
+        validate_training_natural_keys(pd.DataFrame([plot]))
+
+
 def test_coordinates_prefer_station_then_complete_field_centroid() -> None:
     station = {
         "Weather_Station_Latitude (in decimal numbers NOT DMS)": "42.1",
@@ -315,6 +367,18 @@ def test_irrigation_normalization_preserves_uncertainty(
 def test_severe_issue_rule_flags_non_modelled_plot_damage() -> None:
     assert classify_severe_issue(["Hogs damaged plots throughout the field"])
     assert not classify_severe_issue(
+        [
+            "Field was harvested before traits were measured; "
+            "lodging not reported as an issue in any plots by technician"
+        ]
+    )
+    assert classify_severe_issue(
+        [
+            "Lodging not reported as an issue in any plots | "
+            "planter error affected pass 3"
+        ]
+    )
+    assert not classify_severe_issue(
         ["Additional weather data are available from the university station"]
     )
 
@@ -342,6 +406,30 @@ def test_soil_profiles_use_modal_texture_tie_break_and_default_provenance() -> N
     assert profiles.loc["B_2022", "texture"] == "Loam"
     assert profiles.loc["B_2022", "profile_source"] == "default"
     assert bool(profiles.loc["B_2022", "texture_conflict"]) is False
+
+
+def test_soil_profiles_include_default_category_in_modal_selection() -> None:
+    environments = pd.DataFrame([{"environment_id": "A_2022"}])
+    samples = pd.DataFrame(
+        [
+            {"environment_id": "A_2022", "texture": "Clay"},
+            {"environment_id": "A_2022", "texture": None},
+            {"environment_id": "A_2022", "texture": "unrecognized"},
+        ]
+    )
+
+    profile = derive_soil_profiles(environments, samples, default_texture="Loam").iloc[
+        0
+    ]
+
+    assert profile["texture"] == "Loam"
+    assert profile["profile_source"] == "default"
+    assert bool(profile["texture_conflict"]) is True
+    assert json.loads(profile["sample_texture_categories"]) == [
+        "Clay",
+        "Loam",
+        "Loam",
+    ]
 
 
 def test_representative_maize_weights_hybrid_means_equally() -> None:
@@ -426,7 +514,7 @@ def test_prepare_writes_complete_atomic_stable_artifact_set(tmp_path: Path) -> N
         str(path.relative_to(config.experiment_dir))
         for path in first.generated_artifacts
     } == EXPECTED_ARTIFACTS
-    assert first.counts["training_plot_rows"] == 3
+    assert first.counts["training_plot_rows"] == 4
     assert first.counts["training_management_units"] == 1
     assert first.counts["testing_environments"] == 1
     assert first.calibration_eligible_management_unit_ids == (
@@ -439,15 +527,33 @@ def test_prepare_writes_complete_atomic_stable_artifact_set(tmp_path: Path) -> N
     manifest = json.loads(first_manifest)
     assert manifest["schema_version"] == "g2f-normalized-v1"
     assert set(manifest["sources"]) == {
+        "testing_ec",
         "testing_metadata",
         "testing_observations",
         "testing_soil",
         "testing_template",
         "testing_weather",
+        "testing_weather_seasons_only",
+        "training_ec",
         "training_metadata",
         "training_soil",
         "training_traits",
         "training_weather",
+        "training_weather_seasons_only",
+    }
+    for name in (
+        "training_weather_seasons_only",
+        "testing_weather_seasons_only",
+        "training_ec",
+        "testing_ec",
+    ):
+        assert manifest["sources"][name]["role"] == "excluded_from_model_inputs"
+    assert manifest["producer"]["name"] == "snowwindow"
+    assert manifest["producer"]["version"]
+    assert manifest["runtime"] == {
+        "python": platform.python_version(),
+        "pandas": pd.__version__,
+        "pyarrow": pyarrow.__version__,
     }
     assert set(manifest["artifacts"]) == EXPECTED_ARTIFACTS - {
         "manifests/prepare_manifest.json"
@@ -476,6 +582,58 @@ def test_prepare_writes_complete_atomic_stable_artifact_set(tmp_path: Path) -> N
     assert missing_test.isna().all()
     assert plots["source_row_number"].min() == 1
 
+    audit = json.loads((config.experiment_dir / "audit/data_audit.json").read_text())
+    assert audit["source_exclusion_counts"] == {"planting_date_missing": 1}
+    assert audit["source_exclusions"] == [
+        {
+            "environment_id": "IAH1_2022",
+            "reason": "planting_date_missing",
+            "source_filename": ("Training_data/1_Training_Trait_Data_2014_2023.csv"),
+            "source_row_number": 4,
+        }
+    ]
+    for name in (
+        "training_weather_seasons_only",
+        "testing_weather_seasons_only",
+        "training_ec",
+        "testing_ec",
+    ):
+        assert audit["source_inventory"][name]["role"] == "excluded_from_model_inputs"
+
+    eligibility = pd.read_parquet(
+        config.experiment_dir / "audit/eligibility.parquet"
+    ).set_index("management_unit_id")
+    training_unit = eligibility.loc["IAH1_2022__EXP_A__2022-05-01"]
+    assert bool(training_unit["scan_eligible"]) is False
+    assert "crossyear_weather_missing" in json.loads(training_unit["scan_reason_codes"])
+
+
+def test_crossyear_scan_uses_only_explicit_continuation_mapping(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    _write_fixture_data(data_dir)
+
+    without_mapping = prepare_g2f(_config(data_dir, tmp_path / "without"))
+    assert (
+        "IAH1_2022__EXP_A__2022-05-01"
+        not in without_mapping.scan_eligible_management_unit_ids
+    )
+
+    with_mapping = prepare_g2f(
+        _config(
+            data_dir,
+            tmp_path / "with",
+            simulation_options={
+                "scan_horizon": "cross_year",
+                "continuation_weather_by_environment": {"IAH1_2022": "IAH1_2023"},
+            },
+        )
+    )
+    assert (
+        "IAH1_2022__EXP_A__2022-05-01" in with_mapping.scan_eligible_management_unit_ids
+    )
+
 
 @pytest.mark.integration
 def test_real_data_audit_measures_known_g2f_coverage(tmp_path: Path) -> None:
@@ -488,6 +646,7 @@ def test_real_data_audit_measures_known_g2f_coverage(tmp_path: Path) -> None:
     assert audit["counts"]["training_environments"] == 272
     assert audit["counts"]["testing_environments"] == 23
     assert audit["counts"]["training_management_units"] == 418
+    assert audit["source_exclusion_counts"]["planting_date_missing"] == 363
     assert audit["weather"]["training_missing_environments"] == [
         "TXH2_2015",
         "TXH2_2016",

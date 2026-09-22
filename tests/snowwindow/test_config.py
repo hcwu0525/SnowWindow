@@ -195,6 +195,8 @@ def test_bundled_configs_encode_required_experiment_policies() -> None:
     assert demo.selection.calibration_years == (2022,)
     assert demo.selection.evaluation_years == (2023,)
     assert demo.simulation.scan_all_dates is True
+    assert demo.simulation.options["scan_horizon"] == "cross_year"
+    assert demo.simulation.options["continuation_weather_by_environment"] == {}
     assert set(demo.simulation.parameter_sets) == {"default", "calibrated"}
     assert demo.model.parameters["grain_standard_moisture_fraction"] == 0.155
     assert demo.model.parameters["default_soil_texture"] == "Loam"
@@ -205,5 +207,7 @@ def test_bundled_configs_encode_required_experiment_policies() -> None:
     assert history.selection.exclude_default_soil_from_calibration is True
     assert history.selection.all_eligible_environments is True
     assert history.simulation.scan_all_dates is True
+    assert history.simulation.options["scan_horizon"] == "cross_year"
+    assert history.simulation.options["continuation_weather_by_environment"] == {}
     assert history.model.parameters["grain_standard_moisture_fraction"] == 0.155
     assert history.model.parameters["default_soil_texture"] == "Loam"

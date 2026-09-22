@@ -21,6 +21,8 @@ selection:
 simulation:
   scan_fractions: [1.0]
   scan_all_dates: true
+  scan_horizon: cross_year
+  continuation_weather_by_environment: {}
   workers: 1
   parameter_sets:
     default: {}

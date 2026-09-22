@@ -106,3 +106,103 @@ independently by the controller. It was not repeated during finalization.
   audit with pytest `-k` rather than pytest `-m`.
 - The supplied 2024 weather cannot support a complete full-year or cross-year
   scan without additional forcing.
+
+## Fix round 1 — 2026-09-22
+
+### Files changed
+
+- Replaced `src/snowwindow/data.py` with the focused
+  `src/snowwindow/data/` package:
+  - `sources.py` for source schemas, loading, inventory, and key validation.
+  - `normalization.py` for source normalization and aggregation.
+  - `audit.py` for weather coverage, exclusions, and eligibility.
+  - `preparation.py` for orchestration, artifacts, and manifests.
+  - `__init__.py` as the small public facade.
+- Updated `tests/snowwindow/test_data.py` and
+  `tests/snowwindow/test_config.py`.
+- Updated `configs/g2f_demo.yaml` and `configs/g2f_history.yaml`.
+
+### RED and GREEN evidence
+
+- RED:
+  `.venv-py39/bin/python -m pytest -q tests/snowwindow/test_data.py -k
+  'not test_real_data_audit_measures_known_g2f_coverage' -W
+  error::FutureWarning`
+  - 9 failed, 17 passed, 1 deselected.
+  - The failures covered null natural keys, negated severe comments, default
+    soil samples participating in modal selection, excluded-source inventory,
+    missing-date source exclusions, explicit cross-year continuation forcing,
+    and runtime manifest metadata.
+- GREEN:
+  `.venv-py39/bin/python -m pytest -q tests/snowwindow/test_data.py -k
+  'not test_real_data_audit_measures_known_g2f_coverage' -W
+  error::FutureWarning`
+  - 26 passed, 1 deselected in 1.04 seconds.
+- Real-data audit, run once:
+  `.venv-py39/bin/python -m pytest -q
+  tests/snowwindow/test_data.py::test_real_data_audit_measures_known_g2f_coverage`
+  - 1 passed in 68.51 seconds.
+- Fast focused verification:
+  `.venv-py39/bin/python -m pytest -q tests/snowwindow/test_data.py
+  tests/snowwindow/test_config.py -k
+  'not test_real_data_audit_measures_known_g2f_coverage' -W
+  error::FutureWarning`
+  - 45 passed, 1 deselected in 1.10 seconds.
+- Full suite excluding the already-run real-data audit:
+  `.venv-py39/bin/python -m pytest -q -k
+  'not test_real_data_audit_measures_known_g2f_coverage'`
+  - 76 passed, 1 deselected in 4.41 seconds.
+- Ruff lint:
+  `.venv-py39/bin/ruff check src tests/snowwindow`
+  - All checks passed.
+- The first Ruff format check identified only formatting in
+  `tests/snowwindow/test_data.py`; `.venv-py39/bin/ruff format
+  tests/snowwindow/test_data.py` reformatted that file.
+- Final Ruff format check:
+  `.venv-py39/bin/ruff format --check src tests/snowwindow`
+  - 11 files already formatted.
+
+### Measured real-data counts
+
+- Training plot rows: 173,960.
+- Training environments: 272.
+- Testing environments: 23.
+- Parsed training management units: 418.
+- Training rows excluded from management-unit formation because planting date
+  is missing: 363. Each exclusion records its reason, source filename, source
+  row number, and environment.
+- Training full-year weather remains absent for `TXH2_2015`, `TXH2_2016`, and
+  `TXH2_2017`.
+- All 23 testing environments end on November 10, 2024.
+- All 23 testing environments have core forcing gaps on July 12–14, 2024,
+  totaling 69 environment-date gaps.
+
+### Decisions
+
+- Cross-year scan eligibility requires an exact
+  `continuation_weather_by_environment` entry whose target is complete weather
+  for the following year. No location relationship is inferred from an
+  environment prefix. Missing or invalid continuation forcing produces
+  `crossyear_weather_missing`.
+- Both seasons-only weather tables and both EC tables are hashed and listed in
+  the manifest and audit as `excluded_from_model_inputs`; only sources marked
+  `model_input` are loaded into normalized model tables.
+- Training rows with no parsed planting date remain in plot observations and
+  are also represented in the deterministic source-exclusion audit. They do
+  not create management units.
+- Severe issue detection evaluates clauses and ignores a severe term when the
+  same clause explicitly negates or reports absence of that issue.
+- Every soil sample maps to either a recognized AquaCrop texture or the
+  configured default before modal selection. Conflict compares those mapped
+  categories, and a default-derived winner records `profile_source=default`.
+- Training natural keys reject null components before duplicate detection.
+- The preparation manifest records the SnowWindow producer version and Python,
+  pandas, and PyArrow versions.
+
+### Concerns
+
+- The severe-comment rule is a deterministic clause-level heuristic. New
+  source wording may require another explicit regression case.
+- The checked-in cross-year configurations intentionally have empty
+  continuation mappings, so cross-year scan units remain ineligible until
+  verified continuation environments are configured.
