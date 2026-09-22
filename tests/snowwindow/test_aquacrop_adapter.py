@@ -308,11 +308,14 @@ def test_run_returns_invalid_input_for_non_serializable_request_content() -> Non
     assert result.failure_reason
 
 
-def test_unexpected_validation_failure_is_execution_failed(monkeypatch) -> None:
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError, TypeError])
+def test_unexpected_validation_failure_is_execution_failed(
+    monkeypatch, error_type
+) -> None:
     adapter = AquaCropAdapter()
 
     def fail_validation(request) -> None:
-        raise RuntimeError("dependency failure")
+        raise error_type("dependency failure")
 
     monkeypatch.setattr(adapter, "validate", fail_validation)
 
@@ -320,6 +323,22 @@ def test_unexpected_validation_failure_is_execution_failed(monkeypatch) -> None:
 
     assert result.status is RunStatus.EXECUTION_FAILED
     assert result.failure_reason == "dependency failure"
+
+
+def test_unexpected_dependency_value_error_during_validation_is_execution_failed(
+    monkeypatch,
+) -> None:
+    import snowwindow.models.aquacrop.adapter as adapter_module
+
+    def fail_version(name) -> str:
+        raise ValueError("metadata failure")
+
+    monkeypatch.setattr(adapter_module.importlib.metadata, "version", fail_version)
+
+    result = AquaCropAdapter().run(_request())
+
+    assert result.status is RunStatus.EXECUTION_FAILED
+    assert result.failure_reason == "metadata failure"
 
 
 @pytest.mark.integration
@@ -396,6 +415,27 @@ def test_cached_scientific_result_uses_current_request_id(tmp_path) -> None:
     assert result.request_id == "request-2"
     persisted = json.loads(result.artifacts["summary"].read_text())
     assert persisted["request_id"] == "request-2"
+
+
+@pytest.mark.integration
+def test_cache_hit_rewrite_failure_returns_execution_failed(
+    tmp_path, monkeypatch
+) -> None:
+    import snowwindow.models.aquacrop.adapter as adapter_module
+
+    adapter = AquaCropAdapter()
+    request = _request(output_dir=tmp_path)
+    adapter.run(request)
+
+    def fail_write(path, value) -> None:
+        raise OSError("cache write failed")
+
+    monkeypatch.setattr(adapter_module, "_atomic_json", fail_write)
+
+    result = adapter.run(replace(request, request_id="request-2"))
+
+    assert result.status is RunStatus.EXECUTION_FAILED
+    assert result.failure_reason == "cache write failed"
 
 
 @pytest.mark.integration

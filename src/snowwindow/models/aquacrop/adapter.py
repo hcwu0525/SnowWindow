@@ -128,7 +128,7 @@ def _as_date(value: object) -> date:
     try:
         return date.fromisoformat(str(value))
     except ValueError as exc:
-        raise ValueError(f"invalid planting date: {value!r}") from exc
+        raise RequestValidationError(f"invalid planting date: {value!r}") from exc
 
 
 def _number(
@@ -143,11 +143,13 @@ def _number(
     try:
         value = float(parameters.get(name, default))
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be numeric") from exc
+        raise RequestValidationError(f"{name} must be numeric") from exc
     lower_ok = value >= minimum if minimum_inclusive else value > minimum
     if not math.isfinite(value) or not lower_ok or value > maximum:
         bracket = "[" if minimum_inclusive else "("
-        raise ValueError(f"{name} must be in {bracket}{minimum}, {maximum}]")
+        raise RequestValidationError(
+            f"{name} must be in {bracket}{minimum}, {maximum}]"
+        )
     return value
 
 
@@ -263,8 +265,8 @@ class AquaCropAdapter:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def validate(self, request: SimulationRequest) -> None:
+        self._validate_request(request)
         try:
-            self._validate_request(request)
             json.dumps(
                 _plain_request(request),
                 allow_nan=False,
@@ -272,8 +274,6 @@ class AquaCropAdapter:
                 separators=(",", ":"),
                 sort_keys=True,
             )
-        except RequestValidationError:
-            raise
         except (TypeError, ValueError) as exc:
             raise RequestValidationError(str(exc)) from exc
 
@@ -282,7 +282,7 @@ class AquaCropAdapter:
         installed_version = importlib.metadata.version("aquacrop")
         requested_version = str(parameters.get("model_version", self.version))
         if installed_version != self.version or requested_version != self.version:
-            raise ValueError(
+            raise RequestValidationError(
                 "model version must be AquaCrop 3.1.0 "
                 f"(installed={installed_version}, requested={requested_version})"
             )
@@ -291,21 +291,23 @@ class AquaCropAdapter:
             parameters.get("planting_date", request.management.planting_date)
         )
         if requested_planting != request.management.planting_date:
-            raise ValueError(
+            raise RequestValidationError(
                 "requested planting date must equal management planting date"
             )
         if request.environment.environment_id != request.management.environment_id:
-            raise ValueError(
+            raise RequestValidationError(
                 "management environment does not match request environment"
             )
         if request.environment.year != request.management.planting_date.year:
-            raise ValueError("environment year must equal planting year")
+            raise RequestValidationError("environment year must equal planting year")
         expected_start = date(request.environment.year, 1, 1)
         if request.start_date != expected_start:
-            raise ValueError("simulation must start on January 1 of the planting year")
+            raise RequestValidationError(
+                "simulation must start on January 1 of the planting year"
+            )
         expected_end, _ = simulation_end_for_planting(request.management.planting_date)
         if request.end_date != expected_end:
-            raise ValueError(
+            raise RequestValidationError(
                 "simulation end must be one day before the next sowing anniversary"
             )
 
@@ -316,26 +318,26 @@ class AquaCropAdapter:
             or len(set(weather_dates)) != len(weather_dates)
             or set(weather_dates) != {timestamp.date() for timestamp in expected_dates}
         ):
-            raise ValueError(
+            raise RequestValidationError(
                 "every calendar day in the inclusive simulation interval "
                 "must have exactly one weather row"
             )
         for record in request.environment.weather:
             if record.environment_id != request.environment.environment_id:
-                raise ValueError(
+                raise RequestValidationError(
                     "weather environment does not match request environment"
                 )
             values = record.values
             if any(name not in values for name in REQUIRED_WEATHER_VALUES):
-                raise ValueError("weather row is missing required values")
+                raise RequestValidationError("weather row is missing required values")
             try:
                 numeric = {
                     name: float(values[name]) for name in REQUIRED_WEATHER_VALUES
                 }
             except (TypeError, ValueError) as exc:
-                raise ValueError("weather values must be numeric") from exc
+                raise RequestValidationError("weather values must be numeric") from exc
             if not all(math.isfinite(value) for value in numeric.values()):
-                raise ValueError("weather values must be finite")
+                raise RequestValidationError("weather values must be finite")
             physical = (
                 numeric["T2M_MIN"] <= numeric["T2M_MAX"]
                 and numeric["PRECTOTCORR"] >= 0
@@ -345,11 +347,11 @@ class AquaCropAdapter:
                 and numeric["ALLSKY_SFC_SW_DWN"] >= 0
             )
             if not physical:
-                raise ValueError("weather values are physically invalid")
+                raise RequestValidationError("weather values are physically invalid")
 
         irrigation = request.management.irrigation_assumption
         if irrigation == "irrigated_confirmed" or parameters.get("irrigation_schedule"):
-            raise ValueError("only rainfed management is supported")
+            raise RequestValidationError("only rainfed management is supported")
 
         soil_depth = _number(parameters, "soil_depth_m", 2.0, minimum=0.2, maximum=5.0)
         compartment = _number(
@@ -361,19 +363,25 @@ class AquaCropAdapter:
         )
         count = round(soil_depth / compartment)
         if not math.isclose(count * compartment, soil_depth, abs_tol=1e-9):
-            raise ValueError("soil depth must be divisible by compartment thickness")
+            raise RequestValidationError(
+                "soil depth must be divisible by compartment thickness"
+            )
         if len(request.environment.soil) > 1:
-            raise ValueError("only one homogeneous AquaCrop soil layer is supported")
+            raise RequestValidationError(
+                "only one homogeneous AquaCrop soil layer is supported"
+            )
         if request.environment.soil:
             layer = request.environment.soil[0]
             if not math.isclose(layer.top_depth_m, 0.0, abs_tol=1e-9) or not (
                 math.isclose(layer.bottom_depth_m, soil_depth, abs_tol=1e-9)
             ):
-                raise ValueError("soil layer must span the configured profile depth")
+                raise RequestValidationError(
+                    "soil layer must span the configured profile depth"
+                )
 
         crop = str(parameters.get("crop", DEFAULT_CROP))
         if crop not in crop_params:
-            raise ValueError(f"unsupported AquaCrop crop: {crop}")
+            raise RequestValidationError(f"unsupported AquaCrop crop: {crop}")
         _number(
             parameters,
             "phenology_scale",
@@ -419,7 +427,7 @@ class AquaCropAdapter:
             minimum_inclusive=False,
         )
         if not isinstance(parameters.get("save_daily", False), bool):
-            raise ValueError("save_daily must be boolean")
+            raise RequestValidationError("save_daily must be boolean")
         moisture_fraction = _number(
             parameters,
             "grain_standard_moisture_fraction",
@@ -428,19 +436,23 @@ class AquaCropAdapter:
             maximum=1.0,
         )
         if not math.isclose(moisture_fraction, 0.155, abs_tol=1e-12):
-            raise ValueError("grain_standard_moisture_fraction must equal 0.155")
+            raise RequestValidationError(
+                "grain_standard_moisture_fraction must equal 0.155"
+            )
         try:
             soil = Soil(
                 _soil_type(request, parameters),
                 dz=[compartment] * count,
             )
         except Exception as exc:
-            raise ValueError("unsupported AquaCrop soil/profile assumptions") from exc
+            raise RequestValidationError(
+                "unsupported AquaCrop soil/profile assumptions"
+            ) from exc
         profile = soil.profile
         if not (
             (profile["th_wp"] < profile["th_fc"]) & (profile["th_fc"] < profile["th_s"])
         ).all():
-            raise ValueError("unsupported AquaCrop soil hydraulic ordering")
+            raise RequestValidationError("unsupported AquaCrop soil hydraulic ordering")
 
     def smoke(self) -> dict[str, Any]:
         """Run AquaCrop's bundled reference example through the pinned engine."""
@@ -555,8 +567,23 @@ class AquaCropAdapter:
                         diagnostics=diagnostics,
                         failure_reason=cached.failure_reason,
                     )
-                    _atomic_json(paths["summary"], result.to_json_dict())
-                    return result
+                    try:
+                        _atomic_json(paths["summary"], result.to_json_dict())
+                        return result
+                    except Exception as exc:
+                        return SimulationResult(
+                            request_id=request.request_id,
+                            adapter_name=self.name,
+                            adapter_version=self.version,
+                            status=RunStatus.EXECUTION_FAILED,
+                            diagnostics={
+                                "cache_hit": False,
+                                "cache_key": key,
+                                **self.source_fingerprints,
+                                "traceback": traceback.format_exc(),
+                            },
+                            failure_reason=str(exc),
+                        )
 
         try:
             status, summary, daily, crop_values, soil_profile = self._run_model(request)

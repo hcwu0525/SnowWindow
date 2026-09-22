@@ -50,3 +50,12 @@ No raw data, prior outputs, legacy `aquacrop_demo/` code, or legacy tests were m
 - Refreshes the cached summary atomically with the current request identity.
 - Added regression tests for all four review findings.
 - Full suite: 110 passed in 76.61 seconds; Ruff lint and format checks passed.
+
+## Review fix round 2
+
+- Validation now raises `RequestValidationError` only for explicit contract
+  failures; unexpected `TypeError` and `ValueError` failures remain execution
+  failures.
+- Cache-hit summary refresh failures now return `SimulationResult` with
+  `execution_failed` instead of escaping.
+- Full suite: 114 passed in 76.92 seconds; Ruff lint and format checks passed.
