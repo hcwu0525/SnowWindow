@@ -7,6 +7,8 @@ model:
   parameters:
     crop: Maize
     model_version: "3.1.0"
+    grain_standard_moisture_fraction: 0.155
+    default_soil_texture: Loam
 
 selection:
   environments:

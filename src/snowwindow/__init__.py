@@ -9,6 +9,7 @@ from snowwindow.config import (
     SimulationConfig,
     load_config,
 )
+from snowwindow.data import PreparationResult, audit_g2f, prepare_g2f
 from snowwindow.domain import (
     Environment,
     ManagementUnit,
@@ -29,6 +30,7 @@ __all__ = [
     "ModelAdapter",
     "ModelConfig",
     "Observation",
+    "PreparationResult",
     "RunStatus",
     "SelectionConfig",
     "SimulationConfig",
@@ -36,7 +38,9 @@ __all__ = [
     "SimulationResult",
     "SoilLayer",
     "WeatherRecord",
+    "audit_g2f",
     "load_config",
+    "prepare_g2f",
 ]
 
 __version__ = "0.1.0"
