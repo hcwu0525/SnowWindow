@@ -4,8 +4,9 @@ __pycache__/
 .pytest_cache/
 .cache/
 .DS_Store
-data/
-outputs/
+data
+outputs
 .worktrees/
 .superpowers/
 .venv-linux/
+.venv-py39/
