@@ -1,0 +1,27 @@
+data_dir: data/Training_data
+output_dir: outputs/aquacrop_demo
+crop: MaizeGDD
+model_version: 3.1.0
+workers: 3
+sites: 3
+years_per_site: 3
+minimum_years_per_site: 2
+offsets_days: [-20, -15, -10, -5, 0, 5, 10, 15, 20]
+initial_available_water_pct: 50
+soil_depth_m: 2.0
+soil_compartment_m: 0.1
+plant_population_ha: 75000
+grain_standard_moisture_fraction: 0.155
+weather_source: nasa_power_ag_refresh
+weather_parameters: [T2M_MIN, T2M_MAX, PRECTOTCORR, RH2M, WS2M, ALLSKY_SFC_SW_DWN, PS]
+phenology_scale_grid: [0.8, 1.2, 0.02]
+harvest_index_grid: [0.35, 0.55, 0.01]
+window_fractions: [0.90, 0.95]
+input_sensitivity:
+  initial_available_water_pct: [25, 75]
+  root_depth_scale: [0.8, 1.2]
+sources:
+  model: https://github.com/aquacropos/aquacrop
+  weather: https://power.larc.nasa.gov/api/temporal/daily/point
+  et0: https://www.fao.org/4/X0490E/x0490e06.htm
+  yield_moisture: https://link.springer.com/article/10.1186/s13104-026-07629-5
