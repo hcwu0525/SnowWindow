@@ -1,0 +1,198 @@
+"""Immutable model-independent domain records."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass, field, fields, is_dataclass
+from datetime import date, datetime
+from enum import Enum
+from pathlib import Path, PurePath
+from types import MappingProxyType
+from typing import Any
+
+
+class RunStatus(str, Enum):
+    MATURED = "matured"
+    CROP_DIED = "crop_died"
+    NOT_GERMINATED = "not_germinated"
+    NOT_MATURED = "not_matured"
+    INSUFFICIENT_THERMAL_TIME = "insufficient_thermal_time"
+    MODEL_LIMIT = "model_limit"
+    INVALID_INPUT = "invalid_input"
+    EXECUTION_FAILED = "execution_failed"
+
+
+def _freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return tuple(sorted((_freeze(item) for item in value), key=repr))
+    return value
+
+
+def _json_key(value: Any) -> str:
+    if isinstance(value, Enum):
+        return str(value.value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, PurePath):
+        return str(value)
+    return str(value)
+
+
+def _to_json_compatible(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return _to_json_compatible(value.value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, PurePath):
+        return str(value)
+    if is_dataclass(value):
+        return {
+            item.name: _to_json_compatible(getattr(value, item.name))
+            for item in fields(value)
+        }
+    if isinstance(value, Mapping):
+        converted: dict[str, Any] = {}
+        for key, item in value.items():
+            json_key = _json_key(key)
+            if json_key in converted:
+                raise ValueError(
+                    f"mapping keys collide after serialization: {json_key}"
+                )
+            converted[json_key] = _to_json_compatible(item)
+        return {key: converted[key] for key in sorted(converted)}
+    if isinstance(value, (tuple, list)):
+        return [_to_json_compatible(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        converted_items = [_to_json_compatible(item) for item in value]
+        return sorted(converted_items, key=repr)
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    raise TypeError(f"{type(value).__name__} is not JSON-compatible")
+
+
+class StableRecord:
+    """Shared immutable serialization and hashing behavior."""
+
+    def __post_init__(self) -> None:
+        for item in fields(self):
+            object.__setattr__(self, item.name, _freeze(getattr(self, item.name)))
+
+    def to_json_dict(self) -> dict[str, Any]:
+        serialized = _to_json_compatible(self)
+        if not isinstance(serialized, dict):
+            raise TypeError("record serialization must produce a dictionary")
+        return serialized
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.to_json_dict()
+
+    def canonical_json(self) -> str:
+        return json.dumps(
+            self.to_json_dict(),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def content_hash(self) -> str:
+        return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
+
+    def __hash__(self) -> int:
+        digest = bytes.fromhex(self.content_hash())
+        return int.from_bytes(digest[:8], byteorder="big", signed=True)
+
+
+@dataclass(frozen=True)
+class WeatherRecord(StableRecord):
+    environment_id: str
+    date: date
+    values: Mapping[str, Any] = field(default_factory=dict)
+    source: str = ""
+
+    __hash__ = StableRecord.__hash__
+
+
+@dataclass(frozen=True)
+class SoilLayer(StableRecord):
+    top_depth_m: float
+    bottom_depth_m: float
+    properties: Mapping[str, Any] = field(default_factory=dict)
+    source: str = ""
+
+    __hash__ = StableRecord.__hash__
+
+
+@dataclass(frozen=True)
+class Environment(StableRecord):
+    environment_id: str
+    year: int
+    location: str
+    latitude: float
+    longitude: float
+    weather: tuple[WeatherRecord, ...] = ()
+    soil: tuple[SoilLayer, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    __hash__ = StableRecord.__hash__
+
+
+@dataclass(frozen=True)
+class ManagementUnit(StableRecord):
+    management_unit_id: str
+    environment_id: str
+    planting_date: date
+    cultivar_id: str = ""
+    population_plants_m2: float | None = None
+    irrigation_assumption: str = "unknown"
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    __hash__ = StableRecord.__hash__
+
+
+@dataclass(frozen=True)
+class Observation(StableRecord):
+    observation_id: str
+    management_unit_id: str
+    variable: str
+    value: float
+    unit: str
+    observed_on: date | None = None
+    source_ids: tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    __hash__ = StableRecord.__hash__
+
+
+@dataclass(frozen=True)
+class SimulationRequest(StableRecord):
+    request_id: str
+    environment: Environment
+    management: ManagementUnit
+    start_date: date
+    end_date: date
+    model_parameters: Mapping[str, Any] = field(default_factory=dict)
+    parameter_set_id: str = "default"
+    output_dir: Path | None = None
+
+    __hash__ = StableRecord.__hash__
+
+
+@dataclass(frozen=True)
+class SimulationResult(StableRecord):
+    request_id: str
+    adapter_name: str
+    adapter_version: str
+    status: RunStatus
+    summary: Mapping[str, Any] = field(default_factory=dict)
+    artifacts: Mapping[str, Path] = field(default_factory=dict)
+    diagnostics: Mapping[str, Any] = field(default_factory=dict)
+    failure_reason: str | None = None
+
+    __hash__ = StableRecord.__hash__

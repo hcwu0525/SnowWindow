@@ -1,0 +1,31 @@
+experiment_id: g2f_demo
+data_dir: ../data
+output_dir: ../outputs
+
+model:
+  name: aquacrop
+  parameters:
+    crop: Maize
+    model_version: "3.1.0"
+
+selection:
+  environments:
+    - INH1_2022
+    - MOH2_2022
+    - NYH2_2022
+    - INH1_2023
+    - MOH2_2023
+    - NYH2_2023
+  calibration_years: [2022]
+  evaluation_years: [2023]
+  allow_assumed_rainfed: true
+  exclude_default_soil_from_calibration: true
+
+simulation:
+  scan_fractions: [1.0]
+  scan_all_dates: true
+  workers: 1
+  parameter_sets:
+    default: {}
+    calibrated:
+      source: calibration
