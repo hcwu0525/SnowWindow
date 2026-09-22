@@ -50,6 +50,11 @@ NEGATED_SEVERE_AFTER = re.compile(
     r"^\s*(?:was |were )?(?:not reported|not observed|not an issue|absent)",
     re.IGNORECASE,
 )
+NEGATED_SEVERE_FAMILY = re.compile(
+    r"\b(?P<issue>lodging|greensnap|goose.?neck)\b\s+"
+    r"(?:was |were )?(?:not reported|not observed|not an issue|absent)",
+    re.IGNORECASE,
+)
 
 
 def _source_name(name: str) -> str:
@@ -132,7 +137,14 @@ def positive_severe_issue_clauses(
 ) -> list[str]:
     positive = []
     for clause in _issue_clauses(comments):
+        negated_families = {
+            match.group("issue").lower()
+            for match in NEGATED_SEVERE_FAMILY.finditer(clause)
+        }
         for match in SEVERE_ISSUE_PATTERN.finditer(clause):
+            matched_issue = match.group(0).lower()
+            if any(family in matched_issue for family in negated_families):
+                continue
             before = clause[max(0, match.start() - 50) : match.start()]
             after = clause[match.end() : match.end() + 70]
             if NEGATED_SEVERE_BEFORE.search(before):

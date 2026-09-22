@@ -372,6 +372,13 @@ def test_severe_issue_rule_flags_non_modelled_plot_damage() -> None:
             "lodging not reported as an issue in any plots by technician"
         ]
     )
+    assert not classify_severe_issue(
+        [
+            "Field was harvested before plant traits (Plant Height, Ear Height, "
+            "Stand Count, Root Lodging, Stalk Lodging) could be measured, lodging "
+            "not reported as an issue in any plots by technician who harvested trial"
+        ]
+    )
     assert classify_severe_issue(
         [
             "Lodging not reported as an issue in any plots | "

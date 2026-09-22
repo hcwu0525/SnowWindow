@@ -206,3 +206,12 @@ independently by the controller. It was not repeated during finalization.
 - The checked-in cross-year configurations intentionally have empty
   continuation mappings, so cross-year scan units remain ineligible until
   verified continuation environments are configured.
+
+## Fix round 2 — 2026-09-22
+
+- Added the exact `MNH1_2016` comment as a regression case. A later
+  `lodging not reported as an issue` statement now suppresses earlier
+  measurement-label mentions of root and stalk lodging in the same clause.
+- Focused data tests: 26 passed, 1 deselected.
+- Real-data audit: 1 passed in 67.71 seconds.
+- Ruff lint and format checks passed.
