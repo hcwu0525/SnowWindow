@@ -24,3 +24,10 @@ The workflow selects the largest management experiment per configured environmen
 ## Limitations
 
 The demo uses the existing read-only same-coordinate NASA POWER cache rather than incomplete 2024 G2F station forcing. Calibration remains representative-maize and global; cultivar-specific parameters are intentionally out of scope.
+
+## Review fixes
+
+- Historical all-eligible selection now treats an empty explicit environment list as all environments.
+- Calibration eligibility is applied before representative-unit selection.
+- Grid bounds and fine steps are configuration-driven; search artifacts include selected/boundary flags, invalid counts, effective parameters, and model fingerprints.
+- Validation rows include observation, site, residual, request, cache, status, and failure identities; calibration/validation manifests and exclusions are written.

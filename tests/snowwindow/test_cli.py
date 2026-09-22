@@ -38,13 +38,25 @@ def test_parser_exposes_all_stage_commands_and_requires_config() -> None:
 
 
 @pytest.mark.parametrize("command", COMMANDS)
-def test_placeholder_stages_fail_clearly(
-    command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_stage_commands_dispatch(
+    command: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "experiment.yaml"
     _write_config(config_path)
+    seen = []
+    monkeypatch.setattr(
+        "snowwindow.cli._run_stage",
+        lambda selected, config: (
+            seen.append((selected, config.experiment_id)) or {"counts": {}}
+        ),
+    )
 
     exit_code = main([command, "--config", str(config_path)])
 
-    assert exit_code != 0
-    assert f"{command}: not implemented" in capsys.readouterr().err
+    assert exit_code == 0
+    assert seen == [(command, "cli-test")]
+    output = capsys.readouterr().out
+    assert "{}" in output if command == "audit" else f"{command}: complete" in output

@@ -160,6 +160,9 @@ def test_representative_unit_is_largest_experiment_without_using_yield() -> None
     selected = select_representative_units(units, ("A_2022",))
 
     assert selected["management_unit_id"].tolist() == ["large"]
+    assert select_representative_units(units, ())["management_unit_id"].tolist() == [
+        "large"
+    ]
 
 
 def test_build_request_uses_full_cross_year_weather_and_profile() -> None:
@@ -324,3 +327,9 @@ def test_validation_preserves_abnormal_rows_and_fixed_coverage() -> None:
 
     assert len(predictions) == 4
     assert set(metrics["coverage"]) == {1.0}
+    assert {
+        "observation_id",
+        "site",
+        "residual",
+        "request_id",
+    }.issubset(predictions.columns)

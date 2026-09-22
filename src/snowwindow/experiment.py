@@ -36,9 +36,9 @@ def select_representative_units(
 ) -> pd.DataFrame:
     """Choose the largest management experiment in each configured environment."""
 
-    selected = management_units.loc[
-        management_units["environment_id"].isin(environment_ids)
-    ].copy()
+    selected = management_units.copy()
+    if environment_ids:
+        selected = selected.loc[selected["environment_id"].isin(environment_ids)]
     selected["plot_count"] = pd.to_numeric(
         selected.get("plot_count", 0), errors="coerce"
     ).fillna(0)
@@ -229,11 +229,13 @@ def build_observed_requests(
     *,
     parameter_set_id: str = "default",
     model_parameters: dict[str, Any] | None = None,
+    units: pd.DataFrame | None = None,
 ) -> tuple[dict[str, SimulationRequest], pd.DataFrame]:
     tables = load_prepared_tables(config)
-    units = select_representative_units(
-        tables["management_units"], config.selection.environments
-    )
+    if units is None:
+        units = select_representative_units(
+            tables["management_units"], config.selection.environments
+        )
     environments = tables["environments"].set_index("environment_id")
     soils = tables["soil_profiles"].set_index("environment_id")
     parameters = {**dict(config.model.parameters), **(model_parameters or {})}

@@ -99,8 +99,17 @@ def calibration_stage(
     _ensure_prepared(config)
     model = _adapter(config, adapter)
     tables = load_prepared_tables(config)
+    eligible_ids = set(
+        tables["eligibility"].loc[
+            tables["eligibility"]["calibration_eligible"].astype(bool),
+            "management_unit_id",
+        ]
+    )
+    calibration_candidates = tables["management_units"].loc[
+        tables["management_units"]["management_unit_id"].isin(eligible_ids)
+    ]
     units = select_representative_units(
-        tables["management_units"], config.selection.environments
+        calibration_candidates, config.selection.environments
     )
     fixed = freeze_observation_set(
         units,
@@ -109,7 +118,15 @@ def calibration_stage(
         calibration_years=config.selection.calibration_years,
         environments=config.selection.environments,
     )
-    requests, _ = build_observed_requests(config)
+    validation_units = select_representative_units(
+        tables["management_units"], config.selection.environments
+    )
+    request_units = (
+        pd.concat([units, validation_units], ignore_index=True)
+        .drop_duplicates("management_unit_id")
+        .reset_index(drop=True)
+    )
+    requests, _ = build_observed_requests(config, units=request_units)
     folds = make_validation_folds(
         units,
         calibration_years=config.selection.calibration_years,
@@ -117,6 +134,13 @@ def calibration_stage(
     )
     parameter_rows = []
     search_frames = []
+    options = config.selection.options
+    phenology_coarse = tuple(
+        float(value) for value in options.get("phenology_scale_grid", (0.8, 1.2, 0.02))
+    )
+    hi0_coarse = tuple(
+        float(value) for value in options.get("harvest_index_grid", (0.35, 0.55, 0.01))
+    )
     for fold in folds:
         if not fold["train_ids"]:
             continue
@@ -125,7 +149,12 @@ def calibration_stage(
             requests,
             fixed,
             training_ids=fold["train_ids"],
+            phenology_coarse=phenology_coarse,
+            phenology_fine_step=float(options.get("phenology_scale_fine_step", 0.005)),
+            hi0_coarse=hi0_coarse,
+            hi0_fine_step=float(options.get("harvest_index_fine_step", 0.0025)),
         )
+        fingerprints = getattr(model, "source_fingerprints", {})
         parameter_rows.append(
             {
                 "fold": fold["name"],
@@ -135,18 +164,61 @@ def calibration_stage(
                 "observation_set_hash": calibrated.observation_set_hash,
                 "adapter_name": model.name,
                 "adapter_version": model.version,
+                **dict(fingerprints),
             }
         )
         search = calibrated.search.copy()
         search.insert(0, "fold", fold["name"])
+        for key, value in dict(fingerprints).items():
+            search[key] = value
         search_frames.append(search)
     parameters = pd.DataFrame(parameter_rows).sort_values("fold").reset_index(drop=True)
     search = pd.concat(search_frames, ignore_index=True)
     root = config.experiment_dir / "calibration"
+    configured_eligibility = (
+        tables["eligibility"]
+        .loc[
+            tables["eligibility"]["environment_id"].isin(config.selection.environments)
+            if config.selection.environments
+            else pd.Series(True, index=tables["eligibility"].index)
+        ]
+        .copy()
+    )
+    selected_ids = set(units["management_unit_id"])
+    exclusions = configured_eligibility.loc[
+        ~configured_eligibility["management_unit_id"].isin(selected_ids)
+    ].copy()
+    exclusions["selection_reason"] = exclusions.apply(
+        lambda row: (
+            "ineligible"
+            if not bool(row["calibration_eligible"])
+            else "other_management_unit_not_representative"
+        ),
+        axis=1,
+    )
     _atomic_table(root / "fixed_observations.parquet", fixed)
+    _atomic_table(root / "exclusions.parquet", exclusions)
     _atomic_table(root / "parameters.parquet", parameters)
     _atomic_table(root / "search.parquet", search)
     _atomic_json(root / "parameters.json", parameters.to_dict("records"))
+    _atomic_json(
+        root / "manifest.json",
+        {
+            "calibration_years": config.selection.calibration_years,
+            "evaluation_years": config.selection.evaluation_years,
+            "selected_management_unit_ids": sorted(selected_ids),
+            "fixed_observation_ids": fixed["observation_id"].tolist(),
+            "grid": {
+                "phenology_coarse": phenology_coarse,
+                "phenology_fine_step": float(
+                    options.get("phenology_scale_fine_step", 0.005)
+                ),
+                "hi0_coarse": hi0_coarse,
+                "hi0_fine_step": float(options.get("harvest_index_fine_step", 0.0025)),
+            },
+            "parameters": parameters.to_dict("records"),
+        },
+    )
     return parameters, search
 
 
@@ -202,4 +274,13 @@ def validation_stage(
     _atomic_table(validation_root / "predictions.csv", predictions)
     _atomic_table(validation_root / "metrics.parquet", metrics)
     _atomic_table(validation_root / "metrics.csv", metrics)
+    _atomic_json(
+        validation_root / "manifest.json",
+        {
+            "row_count": len(predictions),
+            "folds": sorted(predictions["fold"].unique()),
+            "parameter_sets": sorted(predictions["parameter_set_id"].unique()),
+            "evaluation_labels_used_for_calibration": False,
+        },
+    )
     return predictions, metrics

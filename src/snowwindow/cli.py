@@ -1,6 +1,7 @@
 """Command-line entry point for SnowWindow experiment stages."""
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -35,13 +36,48 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_stage(command: str, config) -> object:
+    from snowwindow.data import audit_g2f, prepare_g2f
+    from snowwindow.reporting import report_stage
+    from snowwindow.scan import scan_stage
+    from snowwindow.stages import baseline_stage, calibration_stage, validation_stage
+
+    handlers = {
+        "audit": audit_g2f,
+        "prepare": prepare_g2f,
+        "baseline": baseline_stage,
+        "calibrate": calibration_stage,
+        "validate": validation_stage,
+        "simulate": baseline_stage,
+        "scan": scan_stage,
+        "report": report_stage,
+    }
+    if command == "run":
+        if not (config.experiment_dir / "manifests/prepare_manifest.json").is_file():
+            prepare_g2f(config)
+        baseline_stage(config)
+        calibration_stage(config)
+        validation_stage(config)
+        scan_stage(config)
+        return report_stage(config)
+    return handlers[command](config)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        load_config(args.config)
+        config = load_config(args.config)
     except ConfigError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2
 
-    print(f"{args.command}: not implemented", file=sys.stderr)
-    return 2
+    try:
+        result = _run_stage(args.command, config)
+    except Exception as exc:
+        print(f"{args.command} failed: {exc}", file=sys.stderr)
+        return 1
+    if args.command == "audit":
+        print(json.dumps(result["counts"], sort_keys=True))
+    else:
+        print(f"{args.command}: complete")
+    return 0

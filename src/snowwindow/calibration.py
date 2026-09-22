@@ -373,14 +373,18 @@ def run_coarse_fine_calibration(
     training_ids: tuple[str, ...],
     default_phenology: float = 1.0,
     default_hi0: float = 0.48,
+    phenology_coarse: tuple[float, float, float] = (0.8, 1.2, 0.02),
+    phenology_fine_step: float = 0.005,
+    hi0_coarse: tuple[float, float, float] = (0.35, 0.55, 0.01),
+    hi0_fine_step: float = 0.0025,
 ) -> CalibrationResult:
     coarse = run_two_stage_calibration(
         adapter,
         requests,
         observations,
         training_ids=training_ids,
-        phenology_values=parameter_grid(0.8, 1.2, 0.02),
-        hi0_values=parameter_grid(0.35, 0.55, 0.01),
+        phenology_values=parameter_grid(*phenology_coarse),
+        hi0_values=parameter_grid(*hi0_coarse),
         default_phenology=default_phenology,
         default_hi0=default_hi0,
     )
@@ -391,17 +395,17 @@ def run_coarse_fine_calibration(
         training_ids=training_ids,
         phenology_values=refined_grid(
             coarse.parameters["phenology_scale"],
-            lower=0.8,
-            upper=1.2,
-            radius=0.02,
-            step=0.005,
+            lower=phenology_coarse[0],
+            upper=phenology_coarse[1],
+            radius=phenology_coarse[2],
+            step=phenology_fine_step,
         ),
         hi0_values=refined_grid(
             coarse.parameters["HI0"],
-            lower=0.35,
-            upper=0.55,
-            radius=0.01,
-            step=0.0025,
+            lower=hi0_coarse[0],
+            upper=hi0_coarse[1],
+            radius=hi0_coarse[2],
+            step=hi0_fine_step,
         ),
         default_phenology=default_phenology,
         default_hi0=default_hi0,
@@ -410,9 +414,28 @@ def run_coarse_fine_calibration(
     coarse_search["resolution"] = "coarse"
     fine_search = fine.search.copy()
     fine_search["resolution"] = "fine"
+    combined = pd.concat([coarse_search, fine_search], ignore_index=True)
+    combined["invalid_count"] = combined["expected_count"] - combined["valid_count"]
+    combined["selected"] = (
+        combined["phase"].eq("phenology")
+        & combined["parameter_value"].eq(fine.parameters["phenology_scale"])
+    ) | (
+        combined["phase"].eq("yield")
+        & combined["parameter_value"].eq(fine.parameters["HI0"])
+        & combined["resolution"].eq("fine")
+    )
+    combined["boundary"] = (
+        combined["phase"].eq("phenology")
+        & combined["parameter_value"].isin([phenology_coarse[0], phenology_coarse[1]])
+    ) | (
+        combined["phase"].eq("yield")
+        & combined["parameter_value"].isin([hi0_coarse[0], hi0_coarse[1]])
+    )
+    combined["effective_phenology_scale"] = fine.parameters["phenology_scale"]
+    combined["effective_HI0"] = fine.parameters["HI0"]
     return CalibrationResult(
         parameters=fine.parameters,
-        search=pd.concat([coarse_search, fine_search], ignore_index=True),
+        search=combined,
         observation_set_hash=fine.observation_set_hash,
     )
 
@@ -454,16 +477,25 @@ def validate_parameter_sets(
                 )
                 rows.append(
                     {
+                        "observation_id": f"{unit_id}::{variable}",
                         "fold": fold_name,
                         "split": split_by_unit[unit_id],
                         "parameter_set_id": parameter_set_id,
                         "management_unit_id": unit_id,
                         "environment_id": request.environment.environment_id,
+                        "site": request.environment.environment_id.rsplit("_", 1)[0],
                         "year": request.environment.year,
                         "variable": variable,
                         "observed_value": observed,
                         "predicted_value": result.summary.get(prediction_name),
+                        "residual": (
+                            result.summary.get(prediction_name) - observed
+                            if observed is not None
+                            and result.summary.get(prediction_name) is not None
+                            else None
+                        ),
                         "status": result.status.value,
+                        "request_id": result.request_id,
                         "failure_reason": result.failure_reason,
                         "cache_key": result.diagnostics.get("cache_key"),
                     }
