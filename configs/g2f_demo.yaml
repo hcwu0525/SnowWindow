@@ -5,7 +5,7 @@ output_dir: ../outputs
 model:
   name: aquacrop
   parameters:
-    crop: Maize
+    crop: MaizeGDD
     model_version: "3.1.0"
     grain_standard_moisture_fraction: 0.155
     default_soil_texture: Loam
@@ -24,7 +24,7 @@ selection:
   exclude_default_soil_from_calibration: true
 
 simulation:
-  scan_fractions: [1.0]
+  scan_fractions: [0.90, 0.95]
   scan_all_dates: true
   scan_horizon: cross_year
   continuation_weather_by_environment: {}

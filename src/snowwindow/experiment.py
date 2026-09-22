@@ -1,0 +1,266 @@
+"""Experiment input assembly shared by calibration and planting-date scans."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from snowwindow.config import ExperimentConfig
+from snowwindow.domain import (
+    Environment,
+    ManagementUnit,
+    SimulationRequest,
+    SoilLayer,
+    WeatherRecord,
+)
+from snowwindow.models.aquacrop import simulation_end_for_planting
+
+WEATHER_COLUMNS = (
+    "T2M_MIN",
+    "T2M_MAX",
+    "PRECTOTCORR",
+    "RH2M",
+    "WS2M",
+    "PS",
+    "ALLSKY_SFC_SW_DWN",
+)
+
+
+def select_representative_units(
+    management_units: pd.DataFrame, environment_ids: tuple[str, ...]
+) -> pd.DataFrame:
+    """Choose the largest management experiment in each configured environment."""
+
+    selected = management_units.loc[
+        management_units["environment_id"].isin(environment_ids)
+    ].copy()
+    selected["plot_count"] = pd.to_numeric(
+        selected.get("plot_count", 0), errors="coerce"
+    ).fillna(0)
+    selected = selected.sort_values(
+        ["environment_id", "plot_count", "experiment", "management_unit_id"],
+        ascending=[True, False, True, True],
+    )
+    return (
+        selected.groupby("environment_id", sort=True, as_index=False)
+        .head(1)
+        .reset_index(drop=True)
+    )
+
+
+def build_simulation_request(
+    unit: dict[str, Any],
+    environment: dict[str, Any],
+    soil_profile: dict[str, Any],
+    weather: pd.DataFrame,
+    *,
+    parameter_set_id: str,
+    model_parameters: dict[str, Any],
+    planting_date: date | None = None,
+    output_dir: Path | None = None,
+) -> SimulationRequest:
+    """Build a validated model-independent request from normalized rows."""
+
+    sowing = planting_date or unit["planting_date"]
+    if not isinstance(sowing, date):
+        sowing = pd.Timestamp(sowing).date()
+    end_date, _ = simulation_end_for_planting(sowing)
+    dates = pd.to_datetime(weather["date"], errors="raise")
+    subset = weather.loc[
+        dates.between(pd.Timestamp(sowing.year, 1, 1), pd.Timestamp(end_date))
+    ].copy()
+    subset["date"] = pd.to_datetime(subset["date"]).dt.date
+    records = tuple(
+        WeatherRecord(
+            environment_id=str(environment["environment_id"]),
+            date=row["date"],
+            values={column: row[column] for column in WEATHER_COLUMNS},
+            source=str(row.get("source", "normalized")),
+        )
+        for row in subset.sort_values("date").to_dict("records")
+    )
+    management = ManagementUnit(
+        management_unit_id=str(unit["management_unit_id"]),
+        environment_id=str(environment["environment_id"]),
+        planting_date=sowing,
+        population_plants_m2=(
+            float(unit["population_plants_m2"])
+            if unit.get("population_plants_m2") is not None
+            and pd.notna(unit.get("population_plants_m2"))
+            else None
+        ),
+        irrigation_assumption=str(
+            unit.get("irrigation_assumption")
+            or unit.get("irrigation_status")
+            or "unknown"
+        ),
+        metadata={
+            "experiment": unit.get("experiment"),
+            "plot_count": unit.get("plot_count"),
+        },
+    )
+    model_environment = Environment(
+        environment_id=str(environment["environment_id"]),
+        year=sowing.year,
+        location=str(
+            environment.get("field_location")
+            or environment.get("city")
+            or environment["environment_id"]
+        ),
+        latitude=float(environment["latitude"]),
+        longitude=float(environment["longitude"]),
+        weather=records,
+        soil=(
+            SoilLayer(
+                top_depth_m=0.0,
+                bottom_depth_m=float(model_parameters.get("soil_depth_m", 2.0)),
+                properties={
+                    "aquacrop_soil_type": soil_profile["aquacrop_soil_type"],
+                    "profile_source": soil_profile.get("profile_source"),
+                },
+                source=str(soil_profile.get("profile_source", "normalized")),
+            ),
+        ),
+        metadata={
+            "elevation_m": float(environment.get("elevation_m", 0.0) or 0.0),
+            "coordinate_source": environment.get("coordinate_source"),
+        },
+    )
+    return SimulationRequest(
+        request_id=(
+            f"{unit['management_unit_id']}::{parameter_set_id}::{sowing.isoformat()}"
+        ),
+        environment=model_environment,
+        management=management,
+        start_date=date(sowing.year, 1, 1),
+        end_date=end_date,
+        model_parameters=model_parameters,
+        parameter_set_id=parameter_set_id,
+        output_dir=output_dir,
+    )
+
+
+def load_prepared_tables(config: ExperimentConfig) -> dict[str, pd.DataFrame]:
+    root = config.experiment_dir
+    paths = {
+        "environments": root / "normalized/environments.parquet",
+        "management_units": root / "normalized/management_units.parquet",
+        "observations": root / "normalized/observations.parquet",
+        "soil_profiles": root / "normalized/soil_profiles.parquet",
+        "eligibility": root / "audit/eligibility.parquet",
+    }
+    missing = [str(path) for path in paths.values() if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "prepared experiment artifacts are missing: " + ", ".join(missing)
+        )
+    return {name: pd.read_parquet(path) for name, path in paths.items()}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def load_cached_power_weather(
+    config: ExperimentConfig, environment_id: str
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Load audited current/next-year POWER forcing from the legacy cache."""
+
+    current = config.output_dir / "aquacrop_demo/weather" / f"{environment_id}.csv"
+    continuation = (
+        config.output_dir
+        / "aquacrop_crossyear/weather"
+        / f"{environment_id}_next_year.csv"
+    )
+    current_provenance = (
+        config.output_dir
+        / "aquacrop_demo/weather_raw"
+        / f"{environment_id}.provenance.json"
+    )
+    continuation_provenance = (
+        config.output_dir
+        / "aquacrop_crossyear/weather_raw"
+        / f"{environment_id}_next_year.provenance.json"
+    )
+    required = (current, continuation, current_provenance, continuation_provenance)
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "complete cached POWER forcing is missing: " + ", ".join(missing)
+        )
+    frames = []
+    for path in (current, continuation):
+        frame = pd.read_csv(path, usecols=["Date", *WEATHER_COLUMNS])
+        frame = frame.rename(columns={"Date": "date"})
+        frame["date"] = pd.to_datetime(frame["date"]).dt.date
+        frame["source"] = str(path)
+        frames.append(frame)
+    weather = (
+        pd.concat(frames, ignore_index=True)
+        .sort_values("date")
+        .drop_duplicates("date", keep="first")
+        .reset_index(drop=True)
+    )
+    provenance_rows = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (current_provenance, continuation_provenance)
+    ]
+    provenance = {
+        "source": "NASA POWER AG cached full-year forcing",
+        "files": [
+            {"path": str(path), "sha256": _sha256_file(path)} for path in required
+        ],
+        "elevation_m": float(provenance_rows[0].get("elevation_m", 0.0)),
+    }
+    return weather, provenance
+
+
+def build_observed_requests(
+    config: ExperimentConfig,
+    *,
+    parameter_set_id: str = "default",
+    model_parameters: dict[str, Any] | None = None,
+) -> tuple[dict[str, SimulationRequest], pd.DataFrame]:
+    tables = load_prepared_tables(config)
+    units = select_representative_units(
+        tables["management_units"], config.selection.environments
+    )
+    environments = tables["environments"].set_index("environment_id")
+    soils = tables["soil_profiles"].set_index("environment_id")
+    parameters = {**dict(config.model.parameters), **(model_parameters or {})}
+    requests: dict[str, SimulationRequest] = {}
+    provenance_rows = []
+    for unit in units.to_dict("records"):
+        environment_id = str(unit["environment_id"])
+        weather, provenance = load_cached_power_weather(config, environment_id)
+        environment = environments.loc[environment_id].to_dict()
+        environment["environment_id"] = environment_id
+        environment["elevation_m"] = provenance["elevation_m"]
+        soil = soils.loc[environment_id].to_dict()
+        request = build_simulation_request(
+            unit,
+            environment,
+            soil,
+            weather,
+            parameter_set_id=parameter_set_id,
+            model_parameters=parameters,
+            output_dir=config.experiment_dir / "model_cache",
+        )
+        requests[str(unit["management_unit_id"])] = request
+        provenance_rows.append(
+            {
+                "management_unit_id": unit["management_unit_id"],
+                "environment_id": environment_id,
+                "weather_provenance": json.dumps(provenance, sort_keys=True),
+            }
+        )
+    return requests, pd.DataFrame(provenance_rows)
