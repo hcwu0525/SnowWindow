@@ -10,3 +10,6 @@ outputs
 .superpowers/
 .venv-linux/
 .venv-py39/
+.data/
+.outputs/
+*.egg-info/
