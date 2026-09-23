@@ -10,7 +10,7 @@ from typing import Any
 
 import pandas as pd
 
-from snowwindow.adapters import ModelAdapter
+from snowwindow.adapters import ModelAdapter, resolve_model_adapter
 from snowwindow.calibration import (
     freeze_observation_set,
     make_validation_folds,
@@ -24,7 +24,6 @@ from snowwindow.experiment import (
     load_prepared_tables,
     select_representative_units,
 )
-from snowwindow.models.aquacrop import AquaCropAdapter
 
 
 def _atomic_json(path: Path, value: object) -> None:
@@ -51,9 +50,7 @@ def _atomic_table(path: Path, frame: pd.DataFrame) -> None:
 def _adapter(config: ExperimentConfig, adapter: ModelAdapter | None) -> ModelAdapter:
     if adapter is not None:
         return adapter
-    if config.model.name != "aquacrop":
-        raise ValueError(f"unsupported configured adapter: {config.model.name}")
-    return AquaCropAdapter()
+    return resolve_model_adapter(config)
 
 
 def _ensure_prepared(config: ExperimentConfig) -> None:
@@ -91,6 +88,14 @@ def baseline_stage(
         config.experiment_dir / "baseline/weather_provenance.parquet", provenance
     )
     return result
+
+
+def simulate_stage(
+    config: ExperimentConfig, adapter: ModelAdapter | None = None
+) -> pd.DataFrame:
+    """Run observed planting-date simulations and persist the baseline summary."""
+
+    return baseline_stage(config, adapter)
 
 
 def calibration_stage(

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import tomli
 
 from snowwindow.config import ConfigError, load_config
 
@@ -211,3 +212,17 @@ def test_bundled_configs_encode_required_experiment_policies() -> None:
     assert history.simulation.options["continuation_weather_by_environment"] == {}
     assert history.model.parameters["grain_standard_moisture_fraction"] == 0.155
     assert history.model.parameters["default_soil_texture"] == "Loam"
+
+
+def test_project_targets_python_310() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    with (project_root / "pyproject.toml").open("rb") as handle:
+        project = tomli.load(handle)
+
+    assert project["project"]["requires-python"] == ">=3.10,<3.13"
+    assert project["tool"]["ruff"]["target-version"] == "py310"
+
+    lock = (project_root / "requirements-aquacrop.lock.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "# Python 3.10+" in lock

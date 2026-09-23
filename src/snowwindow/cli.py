@@ -1,11 +1,12 @@
 """Command-line entry point for SnowWindow experiment stages."""
 
+from __future__ import annotations
+
 import argparse
 import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Optional
 
 from snowwindow.config import ConfigError, load_config
 
@@ -40,7 +41,12 @@ def _run_stage(command: str, config) -> object:
     from snowwindow.data import audit_g2f, prepare_g2f
     from snowwindow.reporting import report_stage
     from snowwindow.scan import scan_stage
-    from snowwindow.stages import baseline_stage, calibration_stage, validation_stage
+    from snowwindow.stages import (
+        baseline_stage,
+        calibration_stage,
+        simulate_stage,
+        validation_stage,
+    )
 
     handlers = {
         "audit": audit_g2f,
@@ -48,7 +54,7 @@ def _run_stage(command: str, config) -> object:
         "baseline": baseline_stage,
         "calibrate": calibration_stage,
         "validate": validation_stage,
-        "simulate": baseline_stage,
+        "simulate": simulate_stage,
         "scan": scan_stage,
         "report": report_stage,
     }
@@ -63,7 +69,7 @@ def _run_stage(command: str, config) -> object:
     return handlers[command](config)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         config = load_config(args.config)

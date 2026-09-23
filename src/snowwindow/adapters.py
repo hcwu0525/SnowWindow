@@ -1,5 +1,7 @@
 """Interfaces for crop-model adapters."""
 
+from __future__ import annotations
+
 from collections.abc import Iterable
 from typing import Protocol, runtime_checkable
 
@@ -52,3 +54,29 @@ class AdapterRegistry:
 
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self._adapters))
+
+
+def default_adapter_registry() -> AdapterRegistry:
+    """Return the registry containing SnowWindow's built-in adapters."""
+
+    from snowwindow.models.aquacrop import default_adapter_registry as aquacrop
+
+    return aquacrop()
+
+
+def resolve_model_adapter(
+    config: object, registry: AdapterRegistry | None = None
+) -> ModelAdapter:
+    """Resolve the configured adapter through the active registry."""
+
+    model_name = str(getattr(config.model, "name", ""))
+    available_registry = (
+        registry if registry is not None else default_adapter_registry()
+    )
+    try:
+        return available_registry.get(model_name)
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown configured model {model_name!r}; available models: "
+            f"{', '.join(available_registry.names()) or 'none'}"
+        ) from exc

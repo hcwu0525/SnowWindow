@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from snowwindow.adapters import AdapterRegistry
+from snowwindow.adapters import AdapterRegistry, resolve_model_adapter
 from snowwindow.domain import (
     Environment,
     ManagementUnit,
@@ -73,3 +73,18 @@ def test_registry_unknown_adapter_error_lists_available_names() -> None:
 
     with pytest.raises(KeyError, match=r"missing.*stub"):
         registry.get("missing")
+
+
+def test_resolve_model_adapter_uses_registry_and_config_name() -> None:
+    adapter = StubAdapter()
+    registry = AdapterRegistry([adapter])
+    config = type("Config", (), {"model": type("Model", (), {"name": "stub"})})()
+
+    assert resolve_model_adapter(config, registry) is adapter
+
+
+def test_resolve_model_adapter_reports_unknown_configured_model() -> None:
+    config = type("Config", (), {"model": type("Model", (), {"name": "missing"})})()
+
+    with pytest.raises(ValueError, match="unknown configured model.*stub"):
+        resolve_model_adapter(config, AdapterRegistry([StubAdapter()]))

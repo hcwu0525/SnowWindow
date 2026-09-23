@@ -1,6 +1,6 @@
 """SnowWindow experiment foundations."""
 
-from snowwindow.adapters import AdapterRegistry, ModelAdapter
+from snowwindow.adapters import AdapterRegistry, ModelAdapter, resolve_model_adapter
 from snowwindow.config import (
     ConfigError,
     ExperimentConfig,
@@ -39,6 +39,7 @@ __all__ = [
     "SoilLayer",
     "WeatherRecord",
     "audit_g2f",
+    "resolve_model_adapter",
     "load_config",
     "prepare_g2f",
 ]
