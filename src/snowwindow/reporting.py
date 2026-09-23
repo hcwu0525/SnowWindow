@@ -23,6 +23,39 @@ def _markdown_table(frame: pd.DataFrame) -> str:
     return "\n".join([header, separator, *rows])
 
 
+def observed_yield_points(
+    metrics: pd.DataFrame,
+    predictions: pd.DataFrame,
+    baseline: pd.DataFrame,
+) -> pd.DataFrame:
+    """Return one G2F observed yield point per representative environment."""
+
+    if metrics.empty or predictions.empty or baseline.empty:
+        return pd.DataFrame(
+            columns=["environment_id", "planting_date", "observed_value"]
+        )
+    if "environment_id" not in metrics or "observed_value" not in metrics:
+        metrics = predictions
+    held = metrics.loc[
+        metrics["fold"].eq("held_year") & metrics["variable"].eq("dry_yield_mg_ha")
+    ]
+    if held.empty:
+        return pd.DataFrame(
+            columns=["environment_id", "planting_date", "observed_value"]
+        )
+    points = (
+        held[["environment_id", "observed_value"]]
+        .drop_duplicates("environment_id")
+        .merge(
+            baseline[["environment_id", "planting_date"]],
+            on="environment_id",
+            how="inner",
+            validate="one_to_one",
+        )
+    )
+    return points.sort_values("environment_id").reset_index(drop=True)
+
+
 def report_stage(config: ExperimentConfig) -> Path:
     scan_root = config.experiment_dir / "scan"
     summary_path = scan_root / "summary.parquet"
@@ -35,6 +68,17 @@ def report_stage(config: ExperimentConfig) -> Path:
     metrics = (
         pd.read_parquet(metrics_path) if metrics_path.is_file() else pd.DataFrame()
     )
+    predictions_path = config.experiment_dir / "validation/predictions.parquet"
+    predictions = (
+        pd.read_parquet(predictions_path)
+        if predictions_path.is_file()
+        else pd.DataFrame()
+    )
+    baseline_path = config.experiment_dir / "baseline/summary.parquet"
+    baseline = (
+        pd.read_parquet(baseline_path) if baseline_path.is_file() else pd.DataFrame()
+    )
+    observations = observed_yield_points(metrics, predictions, baseline)
 
     figure_dir = config.experiment_dir / "report/figures"
     figure_dir.mkdir(parents=True, exist_ok=True)
@@ -52,6 +96,20 @@ def report_stage(config: ExperimentConfig) -> Path:
                 ordered["yield_at_15p5_mg_ha"], errors="coerce"
             ).where(ordered["status"].eq("matured"))
             axis.plot(dates, yield_values, label=parameter_set)
+        if not observations.empty:
+            observed = observations.loc[
+                observations["environment_id"].eq(environment_id)
+            ]
+            if not observed.empty:
+                axis.scatter(
+                    pd.to_datetime(observed["planting_date"]),
+                    pd.to_numeric(observed["observed_value"], errors="coerce"),
+                    marker="*",
+                    s=90,
+                    color="black",
+                    label="G2F observed",
+                    zorder=3,
+                )
         axis.set_title(f"{environment_id} full-year planting scan")
         axis.set_ylabel("Yield (Mg/ha at 15.5% moisture)")
         axis.set_xlabel("Planting date")
