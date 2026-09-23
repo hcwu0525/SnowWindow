@@ -11,14 +11,14 @@ future DSSAT and APSIM adapters, but only AquaCrop is installed.
 Create the Python 3.10 environment and install the project:
 
 ```bash
-uv venv --python 3.10 --seed .venv-py310
-.venv-py310/bin/python -m pip install -r requirements-aquacrop.lock.txt
-.venv-py310/bin/python -m pip install -e .
-.venv-py310/bin/python -m pip check
+uv venv --python 3.10 --seed .venv
+.venv/bin/python -m pip install -r requirements-aquacrop.lock.txt
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip check
 ```
 
 If `uv` is unavailable, use any working Python 3.10 installation and create a
-virtual environment with `python3.10 -m venv .venv-py310` before running the
+virtual environment with `python3.10 -m venv .venv` before running the
 same `pip` commands.
 
 ## 2. Data Layout
@@ -70,20 +70,20 @@ deterministic serial runs.
 Run one stage at a time:
 
 ```bash
-.venv-py310/bin/python -m snowwindow audit --config configs/g2f_demo.yaml
-.venv-py310/bin/python -m snowwindow prepare --config configs/g2f_demo.yaml
-.venv-py310/bin/python -m snowwindow baseline --config configs/g2f_demo.yaml
-.venv-py310/bin/python -m snowwindow calibrate --config configs/g2f_demo.yaml
-.venv-py310/bin/python -m snowwindow validate --config configs/g2f_demo.yaml
-.venv-py310/bin/python -m snowwindow simulate --config configs/g2f_demo.yaml
-.venv-py310/bin/python -m snowwindow scan --config configs/g2f_demo.yaml
-.venv-py310/bin/python -m snowwindow report --config configs/g2f_demo.yaml
+.venv/bin/python -m snowwindow audit --config configs/g2f_demo.yaml
+.venv/bin/python -m snowwindow prepare --config configs/g2f_demo.yaml
+.venv/bin/python -m snowwindow baseline --config configs/g2f_demo.yaml
+.venv/bin/python -m snowwindow calibrate --config configs/g2f_demo.yaml
+.venv/bin/python -m snowwindow validate --config configs/g2f_demo.yaml
+.venv/bin/python -m snowwindow simulate --config configs/g2f_demo.yaml
+.venv/bin/python -m snowwindow scan --config configs/g2f_demo.yaml
+.venv/bin/python -m snowwindow report --config configs/g2f_demo.yaml
 ```
 
 Or run the complete cached demo:
 
 ```bash
-.venv-py310/bin/python -m snowwindow run --config configs/g2f_demo.yaml
+.venv/bin/python -m snowwindow run --config configs/g2f_demo.yaml
 ```
 
 The stages are:
@@ -146,6 +146,6 @@ must not need model-specific branches.
 Before committing:
 
 ```bash
-.venv-py310/bin/python -m pytest -q
-.venv-py310/bin/ruff check src tests/snowwindow
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check src tests/snowwindow
 ```

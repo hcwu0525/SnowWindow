@@ -15,14 +15,14 @@ figures, manifests, and reports under `outputs/experiments/<experiment_id>/`.
 
 Run commands from the repository root:
 
-- `uv venv --python 3.10 --seed .venv-py310`: create the supported environment.
-- `.venv-py310/bin/python -m pip install -r requirements-aquacrop.lock.txt`
+- `uv venv --python 3.10 --seed .venv`: create the supported environment.
+- `.venv/bin/python -m pip install -r requirements-aquacrop.lock.txt`
   installs pinned scientific dependencies.
-- `.venv-py310/bin/python -m pip install -e .` installs SnowWindow for development.
-- `.venv-py310/bin/python -m snowwindow run --config configs/g2f_demo.yaml`
+- `.venv/bin/python -m pip install -e .` installs SnowWindow for development.
+- `.venv/bin/python -m snowwindow run --config configs/g2f_demo.yaml`
   runs preparation through reporting.
-- `.venv-py310/bin/python -m pytest -q` runs all tests.
-- `.venv-py310/bin/ruff check src tests/snowwindow` checks style.
+- `.venv/bin/python -m pytest -q` runs all tests.
+- `.venv/bin/ruff check src tests/snowwindow` checks style.
 
 Individual CLI stages include `audit`, `prepare`, `baseline`, `calibrate`,
 `validate`, `simulate`, `scan`, and `report`.
