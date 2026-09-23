@@ -39,8 +39,12 @@ def select_representative_units(
     selected = management_units.copy()
     if environment_ids:
         selected = selected.loc[selected["environment_id"].isin(environment_ids)]
+    if "plot_count" not in selected:
+        selected["plot_count"] = 0
+    if "experiment" not in selected:
+        selected["experiment"] = ""
     selected["plot_count"] = pd.to_numeric(
-        selected.get("plot_count", 0), errors="coerce"
+        selected["plot_count"], errors="coerce"
     ).fillna(0)
     selected = selected.sort_values(
         ["environment_id", "plot_count", "experiment", "management_unit_id"],

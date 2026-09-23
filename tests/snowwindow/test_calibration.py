@@ -251,6 +251,33 @@ def _request(unit_id: str, year: int) -> SimulationRequest:
     )
 
 
+def test_held_year_fold_includes_evaluation_environment_test_units() -> None:
+    units = pd.DataFrame(
+        [
+            {
+                "management_unit_id": "u22",
+                "environment_id": "A_2022",
+                "year": 2022,
+            },
+            {
+                "management_unit_id": "u23",
+                "environment_id": "A_2023",
+                "year": 2023,
+            },
+        ]
+    )
+
+    folds = make_validation_folds(
+        units,
+        calibration_years=(2022,),
+        evaluation_years=(2023,),
+    )
+    held_year = next(fold for fold in folds if fold["name"] == "held_year")
+
+    assert held_year["train_ids"] == ("u22",)
+    assert held_year["test_ids"] == ("u23",)
+
+
 def test_two_stage_calibration_does_not_use_evaluation_labels() -> None:
     observations = pd.DataFrame(
         [

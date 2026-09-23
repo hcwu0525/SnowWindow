@@ -133,7 +133,9 @@ def calibration_stage(
     )
     requests, _ = build_observed_requests(config, units=request_units)
     folds = make_validation_folds(
-        units,
+        pd.concat([units, validation_units], ignore_index=True)
+        .drop_duplicates("management_unit_id")
+        .reset_index(drop=True),
         calibration_years=config.selection.calibration_years,
         evaluation_years=config.selection.evaluation_years,
     )

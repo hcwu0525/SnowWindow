@@ -7,13 +7,22 @@ import json
 import os
 import uuid
 from calendar import isleap
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from snowwindow.adapters import ModelAdapter, resolve_model_adapter
 from snowwindow.config import ExperimentConfig
+from snowwindow.domain import SimulationRequest
+from snowwindow.experiment import (
+    build_simulation_request,
+    load_cached_power_weather,
+    load_prepared_tables,
+    select_representative_units,
+)
 
 
 def calendar_dates(year: int) -> tuple[date, ...]:
@@ -110,51 +119,126 @@ def _atomic_table(path: Path, frame: pd.DataFrame) -> None:
     os.replace(temporary, path)
 
 
-def scan_stage(config: ExperimentConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Materialize the reviewed six-environment scan from the model cache."""
+def native_scan_requests(
+    config: ExperimentConfig, adapter: ModelAdapter | None = None
+) -> tuple[SimulationRequest, ...]:
+    """Build deterministic requests for every environment/parameter/date."""
 
-    source = config.output_dir / "aquacrop_crossyear/annual_scenarios.csv"
-    if not source.is_file():
-        raise FileNotFoundError(
-            "full-year model cache is missing; run the AquaCrop scan producer first"
-        )
-    frame = pd.read_csv(source)
-    selected = frame.loc[
-        frame["Env"].isin(config.selection.environments)
-        & frame["parameter_set"].isin(["default", "optimized"])
-    ].copy()
-    selected["parameter_set"] = selected["parameter_set"].replace(
-        {"optimized": "calibrated"}
+    if adapter is None:
+        resolve_model_adapter(config)
+    tables = load_prepared_tables(config)
+    units = select_representative_units(
+        tables["management_units"], config.selection.environments
     )
-    selected = selected.rename(
-        columns={
-            "Env": "environment_id",
-            "unit_id": "management_unit_id",
-            "dry_yield_Mg_ha": "dry_yield_mg_ha",
-            "yield_at_15p5_Mg_ha": "yield_at_15p5_mg_ha",
-            "flowering_proxy_DAP": "flowering_proxy_dap",
-            "actual_planting_date": "actual_sowing_date",
-        }
-    )
-    selected["planting_date"] = pd.to_datetime(selected["planting_date"]).dt.date
-    selected = selected.sort_values(
-        ["environment_id", "parameter_set", "planting_date"]
-    ).reset_index(drop=True)
+    environments = tables["environments"].set_index("environment_id")
+    soils = tables["soil_profiles"].set_index("environment_id")
+
+    parameter_path = config.experiment_dir / "calibration/parameters.parquet"
+    parameters = pd.read_parquet(parameter_path) if parameter_path.is_file() else None
+    if parameters is None or parameters.empty:
+        raise FileNotFoundError("calibration parameters are missing")
+    held_year = parameters.loc[parameters["fold"].eq("held_year")]
+    if held_year.empty:
+        raise ValueError("held_year calibration parameters are missing")
+    calibrated_parameters = {
+        "phenology_scale": float(held_year.iloc[0]["phenology_scale"]),
+        "HI0": float(held_year.iloc[0]["HI0"]),
+    }
+
+    requests: list[SimulationRequest] = []
+    for unit in units.sort_values("management_unit_id").to_dict("records"):
+        environment_id = str(unit["environment_id"])
+        weather, _ = load_cached_power_weather(config, environment_id)
+        environment = environments.loc[environment_id].to_dict()
+        environment["environment_id"] = environment_id
+        soil = soils.loc[environment_id].to_dict()
+        for parameter_set_id, parameter_values in sorted(
+            config.simulation.parameter_sets.items()
+        ):
+            if (
+                parameter_set_id == "calibrated"
+                and isinstance(parameter_values, Mapping)
+                and parameter_values.get("source") == "calibration"
+            ):
+                model_parameters = {
+                    **dict(config.model.parameters),
+                    **calibrated_parameters,
+                }
+            else:
+                model_parameters = {
+                    **dict(config.model.parameters),
+                    **dict(parameter_values),
+                }
+            year = int(environment["year"])
+            for planting_date in calendar_dates(year):
+                requests.append(
+                    build_simulation_request(
+                        unit,
+                        environment,
+                        soil,
+                        weather,
+                        parameter_set_id=parameter_set_id,
+                        model_parameters=model_parameters,
+                        planting_date=planting_date,
+                        output_dir=config.experiment_dir / "model_cache",
+                    )
+                )
     expected = (
         sum(
-            len(calendar_dates(int(year)))
-            for year in selected[["environment_id", "year"]]
-            .drop_duplicates()["year"]
-            .tolist()
+            len(units.loc[units["environment_id"].eq(environment_id)])
+            * len(config.simulation.parameter_sets)
+            * len(calendar_dates(int(environment["year"])))
+            for environment_id, environment in environments.iterrows()
+            if environment_id in set(units["environment_id"])
         )
-        * 2
     )
-    if len(selected) != expected:
+    if len(requests) != expected:
         raise ValueError(
-            f"scan row count mismatch: expected {expected}, got {len(selected)}"
+            "native scan request count mismatch: "
+            f"expected {expected}, got {len(requests)}"
+        )
+    return tuple(requests)
+
+
+def scan_stage(
+    config: ExperimentConfig, adapter: ModelAdapter | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Run native full-year simulations and derive planting windows."""
+
+    model = adapter if adapter is not None else resolve_model_adapter(config)
+    requests = native_scan_requests(config, model)
+    rows: list[dict[str, Any]] = []
+    for request in requests:
+        result = model.run(request)
+        rows.append(
+            {
+                "environment_id": request.environment.environment_id,
+                "year": request.environment.year,
+                "management_unit_id": request.management.management_unit_id,
+                "parameter_set": request.parameter_set_id,
+                "planting_date": request.management.planting_date,
+                "request_id": result.request_id,
+                "status": result.status.value,
+                "failure_reason": result.failure_reason,
+                "cache_key": result.diagnostics.get("cache_key"),
+                **dict(result.summary),
+            }
+        )
+    selected = (
+        pd.DataFrame(rows)
+        .sort_values(["environment_id", "parameter_set", "planting_date"])
+        .reset_index(drop=True)
+    )
+    if len(selected) != len(requests):
+        raise ValueError(
+            "native scan row count mismatch: "
+            f"expected {len(requests)}, got {len(selected)}"
         )
     if selected.duplicated(["environment_id", "parameter_set", "planting_date"]).any():
-        raise ValueError("scan contains duplicate environment/parameter/date keys")
+        raise ValueError(
+            "native scan requests contain duplicate "
+            "environment/parameter/date keys"
+        )
 
     window_rows = []
     for (environment_id, parameter_set), group in selected.groupby(
@@ -185,15 +269,13 @@ def scan_stage(config: ExperimentConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
                 .drop_duplicates()
                 .shape[0]
             ),
-            "source_path": str(source),
-            "source_sha256": _sha256_file(source),
-            "source_parameter_mapping": {
-                "default": "default",
-                "optimized": "calibrated",
-            },
+            "parameter_sets": sorted(config.simulation.parameter_sets),
             "weather_source": (
-                "NASA POWER AG cached same-coordinate full-year forcing"
+                "NASA POWER AG cached full-year and continuation forcing"
             ),
+            "execution_mode": "native AquaCrop adapter",
+            "adapter_name": model.name,
+            "adapter_version": model.version,
         },
     )
     return selected, windows
