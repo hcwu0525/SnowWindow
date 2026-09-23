@@ -64,6 +64,10 @@ def report_stage(config: ExperimentConfig) -> Path:
         raise FileNotFoundError("scan artifacts are missing")
     summary = pd.read_parquet(summary_path)
     windows = json.loads(windows_path.read_text(encoding="utf-8"))
+    if "dry_yield_mg_ha" not in summary:
+        raise ValueError(
+            "scan summary is missing dry_yield_mg_ha for observed comparison"
+        )
     metrics_path = config.experiment_dir / "validation/metrics.parquet"
     metrics = (
         pd.read_parquet(metrics_path) if metrics_path.is_file() else pd.DataFrame()
@@ -93,7 +97,7 @@ def report_stage(config: ExperimentConfig) -> Path:
             ordered = series.sort_values("planting_date")
             dates = pd.to_datetime(ordered["planting_date"])
             yield_values = pd.to_numeric(
-                ordered["yield_at_15p5_mg_ha"], errors="coerce"
+                ordered["dry_yield_mg_ha"], errors="coerce"
             ).where(ordered["status"].eq("matured"))
             axis.plot(dates, yield_values, label=parameter_set)
         if not observations.empty:
@@ -111,7 +115,7 @@ def report_stage(config: ExperimentConfig) -> Path:
                     zorder=3,
                 )
         axis.set_title(f"{environment_id} full-year planting scan")
-        axis.set_ylabel("Yield (Mg/ha at 15.5% moisture)")
+        axis.set_ylabel("Dry yield (Mg/ha)")
         axis.set_xlabel("Planting date")
         axis.legend()
         figure.autofmt_xdate()

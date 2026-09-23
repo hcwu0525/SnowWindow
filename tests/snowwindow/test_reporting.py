@@ -70,6 +70,7 @@ def test_report_stage_overlays_observed_points(
             "planting_date": ["2022-05-01", "2022-05-01"],
             "status": ["matured", "matured"],
             "yield_at_15p5_mg_ha": [10.0, 9.0],
+            "dry_yield_mg_ha": [8.45, 7.605],
         }
     ).to_parquet(scan / "summary.parquet", index=False)
     (scan / "windows.json").write_text("[]", encoding="utf-8")
@@ -108,3 +109,26 @@ def test_report_stage_overlays_observed_points(
 
     assert (report / "figures" / "A_2022.png").is_file()
     assert output.is_file()
+
+
+def test_report_stage_requires_dry_yield_for_observed_comparison(
+    tmp_path: Path,
+) -> None:
+    experiment = tmp_path / "experiments" / "demo"
+    scan = experiment / "scan"
+    scan.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "environment_id": ["A_2022"],
+            "parameter_set": ["calibrated"],
+            "planting_date": ["2022-05-01"],
+            "status": ["matured"],
+            "yield_at_15p5_mg_ha": [10.0],
+        }
+    ).to_parquet(scan / "summary.parquet", index=False)
+    (scan / "windows.json").write_text("[]", encoding="utf-8")
+
+    config = type("Config", (), {"experiment_dir": experiment})()
+
+    with pytest.raises(ValueError, match="dry_yield_mg_ha"):
+        report_stage(config)  # type: ignore[arg-type]
