@@ -139,14 +139,19 @@ def select_parameter(
         )
         numeric_observed = pd.to_numeric(group["observed_value"], errors="coerce")
         numeric_predicted = pd.to_numeric(group["predicted_value"], errors="coerce")
+        matured = group["status"].eq(RunStatus.MATURED.value)
         usable = (
             complete
-            and group["status"].eq(RunStatus.MATURED.value).all()
-            and numeric_observed.map(math.isfinite).all()
-            and numeric_predicted.map(math.isfinite).all()
+            and int(matured.sum()) > 0
+            and numeric_observed.loc[matured].map(math.isfinite).all()
+            and numeric_predicted.loc[matured].map(math.isfinite).all()
         )
         loss = (
-            float(np.abs(numeric_predicted - numeric_observed).mean())
+            float(
+                np.abs(
+                    numeric_predicted.loc[matured] - numeric_observed.loc[matured]
+                ).mean()
+            )
             if usable
             else float("inf")
         )
@@ -155,12 +160,7 @@ def select_parameter(
                 parameter_name: float(value),
                 "objective_mae": loss,
                 "expected_count": len(expected),
-                "valid_count": int(
-                    (
-                        group["status"].eq(RunStatus.MATURED.value)
-                        & numeric_predicted.notna()
-                    ).sum()
-                ),
+                "valid_count": int((matured & numeric_predicted.notna()).sum()),
                 "valid": bool(usable),
             }
         )
@@ -295,6 +295,8 @@ def run_two_stage_calibration(
     hi0_values: tuple[float, ...],
     default_phenology: float,
     default_hi0: float,
+    phenology_parameter_name: str = "phenology_scale",
+    yield_parameter_name: str = "HI0",
 ) -> CalibrationResult:
     training = observations.loc[
         observations["management_unit_id"].isin(training_ids)
@@ -308,14 +310,14 @@ def run_two_stage_calibration(
         adapter,
         requests,
         flowering,
-        parameter_name="phenology_scale",
+        parameter_name=phenology_parameter_name,
         parameter_values=phenology_values,
-        fixed_parameters={"HI0": default_hi0},
+        fixed_parameters={yield_parameter_name: default_hi0},
         prediction_name="flowering_proxy_dap",
     )
     phenology, phenology_scores = select_parameter(
         flowering_predictions,
-        parameter_name="phenology_scale",
+        parameter_name=phenology_parameter_name,
         default=default_phenology,
         expected_observation_ids=tuple(flowering["observation_id"]),
     )
@@ -325,27 +327,32 @@ def run_two_stage_calibration(
         adapter,
         requests,
         yield_observations,
-        parameter_name="HI0",
+        parameter_name=yield_parameter_name,
         parameter_values=hi0_values,
-        fixed_parameters={"phenology_scale": phenology},
+        fixed_parameters={phenology_parameter_name: phenology},
         prediction_name="dry_yield_mg_ha",
     )
     hi0, yield_scores = select_parameter(
         yield_predictions,
-        parameter_name="HI0",
+        parameter_name=yield_parameter_name,
         default=default_hi0,
         expected_observation_ids=tuple(yield_observations["observation_id"]),
     )
     yield_scores.insert(0, "phase", "yield")
     search = pd.concat(
         [
-            phenology_scores.rename(columns={"phenology_scale": "parameter_value"}),
-            yield_scores.rename(columns={"HI0": "parameter_value"}),
+            phenology_scores.rename(
+                columns={phenology_parameter_name: "parameter_value"}
+            ),
+            yield_scores.rename(columns={yield_parameter_name: "parameter_value"}),
         ],
         ignore_index=True,
     )
     search["parameter_name"] = search["phase"].map(
-        {"phenology": "phenology_scale", "yield": "HI0"}
+        {
+            "phenology": phenology_parameter_name,
+            "yield": yield_parameter_name,
+        }
     )
     search = search[
         [
@@ -359,7 +366,10 @@ def run_two_stage_calibration(
         ]
     ]
     return CalibrationResult(
-        parameters={"phenology_scale": phenology, "HI0": hi0},
+        parameters={
+            phenology_parameter_name: phenology,
+            yield_parameter_name: hi0,
+        },
         search=search,
         observation_set_hash=observation_set_hash(training),
     )
@@ -377,6 +387,8 @@ def run_coarse_fine_calibration(
     phenology_fine_step: float = 0.005,
     hi0_coarse: tuple[float, float, float] = (0.35, 0.55, 0.01),
     hi0_fine_step: float = 0.0025,
+    phenology_parameter_name: str = "phenology_scale",
+    yield_parameter_name: str = "HI0",
 ) -> CalibrationResult:
     coarse = run_two_stage_calibration(
         adapter,
@@ -387,6 +399,8 @@ def run_coarse_fine_calibration(
         hi0_values=parameter_grid(*hi0_coarse),
         default_phenology=default_phenology,
         default_hi0=default_hi0,
+        phenology_parameter_name=phenology_parameter_name,
+        yield_parameter_name=yield_parameter_name,
     )
     fine = run_two_stage_calibration(
         adapter,
@@ -394,14 +408,14 @@ def run_coarse_fine_calibration(
         observations,
         training_ids=training_ids,
         phenology_values=refined_grid(
-            coarse.parameters["phenology_scale"],
+            coarse.parameters[phenology_parameter_name],
             lower=phenology_coarse[0],
             upper=phenology_coarse[1],
             radius=phenology_coarse[2],
             step=phenology_fine_step,
         ),
         hi0_values=refined_grid(
-            coarse.parameters["HI0"],
+            coarse.parameters[yield_parameter_name],
             lower=hi0_coarse[0],
             upper=hi0_coarse[1],
             radius=hi0_coarse[2],
@@ -409,6 +423,8 @@ def run_coarse_fine_calibration(
         ),
         default_phenology=default_phenology,
         default_hi0=default_hi0,
+        phenology_parameter_name=phenology_parameter_name,
+        yield_parameter_name=yield_parameter_name,
     )
     coarse_search = coarse.search.copy()
     coarse_search["resolution"] = "coarse"
@@ -418,10 +434,12 @@ def run_coarse_fine_calibration(
     combined["invalid_count"] = combined["expected_count"] - combined["valid_count"]
     combined["selected"] = (
         combined["phase"].eq("phenology")
-        & combined["parameter_value"].eq(fine.parameters["phenology_scale"])
+        & combined["parameter_value"].eq(
+            fine.parameters[phenology_parameter_name]
+        )
     ) | (
         combined["phase"].eq("yield")
-        & combined["parameter_value"].eq(fine.parameters["HI0"])
+        & combined["parameter_value"].eq(fine.parameters[yield_parameter_name])
         & combined["resolution"].eq("fine")
     )
     combined["boundary"] = (
@@ -431,8 +449,12 @@ def run_coarse_fine_calibration(
         combined["phase"].eq("yield")
         & combined["parameter_value"].isin([hi0_coarse[0], hi0_coarse[1]])
     )
-    combined["effective_phenology_scale"] = fine.parameters["phenology_scale"]
-    combined["effective_HI0"] = fine.parameters["HI0"]
+    combined[f"effective_{phenology_parameter_name}"] = fine.parameters[
+        phenology_parameter_name
+    ]
+    combined[f"effective_{yield_parameter_name}"] = fine.parameters[
+        yield_parameter_name
+    ]
     return CalibrationResult(
         parameters=fine.parameters,
         search=combined,
@@ -460,12 +482,21 @@ def validate_parameter_sets(
     for parameter_set_id, parameters in sorted(parameter_sets.items()):
         for unit_id in sorted(split_by_unit):
             request = requests[unit_id]
+            if request is None:
+                continue
+            model_parameters = {**dict(request.model_parameters), **parameters}
+            site_overrides = dict(parameters.get("site_overrides", {}))
+            if site_overrides:
+                site = request.environment.environment_id.rsplit("_", 1)[0]
+                if site in site_overrides:
+                    model_parameters.update(site_overrides[site])
+            model_parameters.pop("site_overrides", None)
             result = adapter.run(
                 replace(
                     request,
                     request_id=f"{request.request_id}:validation:{parameter_set_id}",
                     parameter_set_id=parameter_set_id,
-                    model_parameters={**dict(request.model_parameters), **parameters},
+                    model_parameters=model_parameters,
                 )
             )
             for variable, prediction_name in prediction_names.items():
@@ -513,3 +544,102 @@ def validate_parameter_sets(
             )
         )
     return predictions, pd.DataFrame(metric_rows)
+
+
+def apply_site_offsets(
+    observations: pd.DataFrame,
+    global_predictions: pd.DataFrame,
+    *,
+    parameter_set_id: str,
+    site_parameter_set_id: str,
+    minimum_training_years: int = 3,
+    maximum_scale: float = 2.0,
+) -> pd.DataFrame:
+    """Derive conservative HI0 and phenology multipliers for mature sites."""
+
+    if parameter_set_id not in set(global_predictions["parameter_set_id"]):
+        raise ValueError("global predictions are missing for site offsets")
+    required = {
+        "management_unit_id",
+        "environment_id",
+        "parameter_set_id",
+        "status",
+        "observed_value",
+        "predicted_value",
+    }
+    missing = sorted(required - set(global_predictions))
+    if missing:
+        raise ValueError(f"global predictions are missing columns: {missing}")
+    if site_parameter_set_id == parameter_set_id:
+        raise ValueError("site parameter set must differ from global parameter set")
+    if minimum_training_years < 1 or not 0 < maximum_scale <= 4:
+        raise ValueError("site-offset bounds are invalid")
+
+    usable = global_predictions.loc[
+        global_predictions["parameter_set_id"].eq(parameter_set_id)
+        & global_predictions["status"].eq(RunStatus.MATURED.value)
+    ].copy()
+    usable["site"] = usable["environment_id"].astype(str).str.rsplit("_", n=1).str[0]
+    usable["observation_id"] = (
+        usable["management_unit_id"].astype(str) + "::" + usable["variable"]
+    )
+    training_observation_ids = set(
+        observations.loc[
+            observations["variable"].isin(CALIBRATION_VARIABLES), "observation_id"
+        ]
+    )
+    usable = usable.loc[usable["observation_id"].isin(training_observation_ids)].copy()
+    rows = []
+    for site, group in usable.groupby("site", sort=True):
+        years = sorted(group["year"].unique())
+        if len(years) < minimum_training_years:
+            continue
+        yield_group = group.loc[group["variable"].eq("dry_yield_mg_ha")]
+        flowering_group = group.loc[group["variable"].eq("pollen_dap")]
+        hi0_site = (
+            float(
+                (
+                    pd.to_numeric(yield_group["observed_value"], errors="coerce")
+                    / pd.to_numeric(yield_group["predicted_value"], errors="coerce")
+                )
+                .replace([np.inf, -np.inf], np.nan)
+                .dropna()
+                .median()
+            )
+            if not yield_group.empty
+            else 1.0
+        )
+        phenology_site = (
+            float(
+                (
+                    pd.to_numeric(flowering_group["observed_value"], errors="coerce")
+                    / pd.to_numeric(flowering_group["predicted_value"], errors="coerce")
+                )
+                .replace([np.inf, -np.inf], np.nan)
+                .dropna()
+                .median()
+            )
+            if not flowering_group.empty
+            else 1.0
+        )
+        if not math.isfinite(hi0_site) or hi0_site <= 0:
+            hi0_site = 1.0
+        if not math.isfinite(phenology_site) or phenology_site <= 0:
+            phenology_site = 1.0
+        hi0_site = min(max(hi0_site, 1.0 / maximum_scale), maximum_scale)
+        phenology_site = min(max(phenology_site, 1.0 / maximum_scale), maximum_scale)
+        train_ids = sorted(group["management_unit_id"].astype(str).unique())
+        rows.append(
+            {
+                "fold": f"site_offset_{site}",
+                "site": site,
+                "HI0_site": hi0_site,
+                "phenology_scale_site": phenology_site,
+                "training_years": len(years),
+                "train_ids": json.dumps(train_ids, separators=(",", ":")),
+                "test_ids": json.dumps(train_ids, separators=(",", ":")),
+                "parameter_set_id": site_parameter_set_id,
+                "base_parameter_set_id": parameter_set_id,
+            }
+        )
+    return pd.DataFrame(rows)

@@ -23,6 +23,7 @@ from snowwindow.data.audit import (
     evaluate_eligibility,
 )
 from snowwindow.data.normalization import (
+    add_density_to_management_units,
     aggregate_representative_maize,
     derive_soil_profiles,
     management_with_environment,
@@ -126,6 +127,7 @@ def _normalize(config: ExperimentConfig) -> _NormalizedData:
         pd.concat([training_units, testing_units], ignore_index=True, sort=False),
         environments,
     )
+    management_units = add_density_to_management_units(management_units, plots)
     moisture_fraction = float(
         config.model.parameters.get("grain_standard_moisture_fraction", 0.155)
     )
@@ -185,6 +187,10 @@ def _normalize(config: ExperimentConfig) -> _NormalizedData:
         "default_soil_texture": default_texture,
         "representative_maize": (
             "mean valid plots within hybrid, then mean hybrid means equally"
+        ),
+        "plant_population": (
+            "management-unit trimmed median of valid plot stand density; "
+            "falls back to 75,000 plants/ha when no valid plot density is available"
         ),
         "yield_magnitude_used_for_selection": False,
         "soil_sample_depth": (

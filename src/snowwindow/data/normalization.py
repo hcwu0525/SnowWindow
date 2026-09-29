@@ -35,6 +35,106 @@ AQUACROP_TEXTURES = {
     "Silty Clay Loam": "SiltClayLoam",
 }
 
+USDA_TEXTURES = {
+    "Sand": ((70, 100), (0, 15)),
+    "Loamy Sand": ((70, 90), (0, 15)),
+    "Sandy Loam": ((43, 85), (0, 20)),
+    "Loam": ((23, 52), (7, 27)),
+    "Silt Loam": ((0, 50), (0, 27)),
+    "Silt": ((0, 8), (0, 12)),
+    "Sandy Clay Loam": ((45, 80), (20, 35)),
+    "Clay Loam": ((20, 45), (27, 40)),
+    "Silty Clay Loam": ((0, 20), (27, 40)),
+    "Sandy Clay": ((45, 65), (35, 45)),
+    "Silty Clay": ((0, 20), (40, 60)),
+    "Clay": ((0, 45), (40, 100)),
+}
+
+_USDA_TEXTURE_ORDER = tuple(USDA_TEXTURES)
+
+
+def classify_usda_texture(sand_percent: float, clay_percent: float) -> str:
+    """Classify complete USDA particle fractions into an AquaCrop texture."""
+
+    sand = float(sand_percent)
+    clay = float(clay_percent)
+    if not (
+        math.isfinite(sand)
+        and math.isfinite(clay)
+        and 0 <= sand <= 100
+        and 0 <= clay <= 100
+        and 0 <= sand + clay <= 100
+    ):
+        raise DataPreparationError(
+            "USDA texture fractions must be nonnegative percentages "
+            "with sand + clay <= 100"
+        )
+    for texture, ((sand_min, sand_max), (clay_min, clay_max)) in (
+        (name, USDA_TEXTURES[name]) for name in _USDA_TEXTURE_ORDER
+    ):
+        if sand_min <= sand <= sand_max and clay_min <= clay <= clay_max:
+            return texture
+    raise DataPreparationError(
+        f"particle fractions do not map to a USDA texture: sand={sand}, clay={clay}"
+    )
+
+
+def add_density_to_management_units(
+    management_units: pd.DataFrame,
+    plots: pd.DataFrame,
+    *,
+    minimum_density: float = 20_000.0,
+    maximum_density: float = 160_000.0,
+    default_density: float = 75_000.0,
+) -> pd.DataFrame:
+    """Add a robust observed planting density and provenance to each unit."""
+
+    missing = sorted(
+        {"management_unit_id", "stand_count_plants", "plot_area_ha"} - set(plots)
+    )
+    if missing:
+        raise DataPreparationError(
+            f"plot observations are missing density columns: {missing}"
+        )
+    if management_units["management_unit_id"].duplicated().any():
+        raise DataPreparationError("management units must have unique IDs")
+    if not (
+        math.isfinite(minimum_density)
+        and math.isfinite(maximum_density)
+        and 0 <= minimum_density < maximum_density
+        and 0 < default_density
+    ):
+        raise DataPreparationError("density bounds are invalid")
+
+    values = pd.DataFrame(
+        {
+            "management_unit_id": plots["management_unit_id"],
+            "density": pd.to_numeric(plots["stand_count_plants"], errors="coerce")
+            / pd.to_numeric(plots["plot_area_ha"], errors="coerce"),
+        }
+    )
+    usable = values.loc[
+        values["density"].between(minimum_density, maximum_density)
+    ].copy()
+    medians = usable.groupby("management_unit_id", sort=True)["density"].median()
+    counts = usable.groupby("management_unit_id", sort=True)["density"].size()
+
+    result = management_units.copy()
+    result["population_plants_ha"] = result["management_unit_id"].map(medians)
+    result["population_source"] = [
+        "plot_trimmed_median" if value in medians.index else "default"
+        for value in result["management_unit_id"]
+    ]
+    result["population_source_count"] = result["management_unit_id"].map(counts)
+    missing_density = result["population_plants_ha"].isna()
+    result.loc[missing_density, "population_plants_ha"] = default_density
+    result.loc[missing_density, "population_source"] = "default"
+    result.loc[missing_density, "population_source_count"] = 0
+    result["population_plants_ha"] = pd.to_numeric(
+        result["population_plants_ha"], errors="raise"
+    )
+    return result
+
 SEVERE_ISSUE_RULE = (
     r"lodging|greensnap|goose.?neck|cranes|mixed seeds|mixed between|"
     r"planter (?:had an issue|error|jammed)|planting mistake|busted berm|"
@@ -177,15 +277,46 @@ def derive_soil_profiles(
     rows = []
     for environment_id in environments["environment_id"].astype(str):
         group = grouped.get(environment_id)
+        particle_rows: list[dict[str, float]] = []
         mapped_samples: list[tuple[str, str]] = []
         if group is not None:
-            for raw_texture in group["texture"]:
+            for sample in group.to_dict("records"):
+                sand = pd.to_numeric(sample.get("sand_percent"), errors="coerce")
+                clay = pd.to_numeric(sample.get("clay_percent"), errors="coerce")
+                if pd.notna(sand) and pd.notna(clay):
+                    particle_rows.append(
+                        {
+                            "sand": float(sand),
+                            "clay": float(clay),
+                            "depth": float(
+                                pd.to_numeric(
+                                    sample.get("raw_sample_depth"), errors="coerce"
+                                )
+                            )
+                            if pd.notna(sample.get("raw_sample_depth"))
+                            else math.nan,
+                            "ph": float(sample.get("soil_ph"))
+                            if pd.notna(sample.get("soil_ph"))
+                            else math.nan,
+                        }
+                    )
+                raw_texture = sample.get("texture")
                 texture = str(raw_texture).strip() if pd.notna(raw_texture) else ""
                 if texture in AQUACROP_TEXTURES:
                     mapped_samples.append((texture, "texture_lookup"))
                 else:
                     mapped_samples.append((default_texture, "default"))
-        if mapped_samples:
+        if particle_rows:
+            sand = sum(row["sand"] for row in particle_rows) / len(particle_rows)
+            clay = sum(row["clay"] for row in particle_rows) / len(particle_rows)
+            texture = classify_usda_texture(sand, clay)
+            profile_source = "particle_fractions"
+            categories = [texture for _ in particle_rows]
+            conflict = any(
+                classify_usda_texture(row["sand"], row["clay"]) != texture
+                for row in particle_rows
+            )
+        elif mapped_samples:
             categories = [texture for texture, _ in mapped_samples]
             counts = Counter(categories)
             maximum = max(counts.values())
@@ -219,6 +350,38 @@ def derive_soil_profiles(
                 "profile_source": profile_source,
                 "texture_conflict": conflict,
                 "sample_count": len(mapped_samples),
+                "particle_fraction_sample_count": len(particle_rows),
+                "representative_sand_percent": (
+                    sum(row["sand"] for row in particle_rows) / len(particle_rows)
+                    if particle_rows
+                    else None
+                ),
+                "representative_clay_percent": (
+                    sum(row["clay"] for row in particle_rows) / len(particle_rows)
+                    if particle_rows
+                    else None
+                ),
+                "representative_depth_m": (
+                    float(
+                        pd.Series(
+                            [row["depth"] for row in particle_rows]
+                        ).median()
+                        / 100
+                    )
+                    if particle_rows
+                    and any(math.isfinite(row["depth"]) for row in particle_rows)
+                    else None
+                ),
+                "representative_soil_ph": (
+                    float(
+                        pd.Series(
+                            [row["ph"] for row in particle_rows]
+                        ).median()
+                    )
+                    if particle_rows
+                    and any(math.isfinite(row["ph"]) for row in particle_rows)
+                    else None
+                ),
                 "recognized_textures": json.dumps(
                     sorted(
                         {

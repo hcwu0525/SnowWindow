@@ -155,30 +155,33 @@ def evaluate_eligibility(
             base_reasons.append("coordinates_missing")
         if not isinstance(unit["planting_date"], date):
             base_reasons.append("planting_date_missing")
-        if irrigation == "irrigated_confirmed":
-            base_reasons.append("irrigated_confirmed")
-        elif irrigation == "unknown" and not config.selection.allow_assumed_rainfed:
+        if irrigation == "unknown" and not config.selection.allow_assumed_rainfed:
             base_reasons.append("rainfed_unconfirmed")
 
-        calibration_reasons = list(base_reasons)
+        scientific_reasons = list(base_reasons)
         current_weather_reason = _weather_reason(weather_coverage.get(environment_id))
         if current_weather_reason is not None:
-            calibration_reasons.append(current_weather_reason)
-        if year not in config.selection.calibration_years:
-            calibration_reasons.append("not_calibration_year")
+            scientific_reasons.append(current_weather_reason)
         unit_observations = (
             observation_values.loc[management_unit_id]
             if management_unit_id in observation_values.index
             else pd.Series(dtype=float)
         )
         if pd.isna(unit_observations.get("pollen_dap")):
-            calibration_reasons.append("pollen_observation_missing")
+            scientific_reasons.append("pollen_observation_missing")
         if pd.isna(unit_observations.get("yield_at_supplied_moisture_mg_ha")):
-            calibration_reasons.append("yield_observation_missing")
+            scientific_reasons.append("yield_observation_missing")
         if soil["profile_source"] == "default":
-            calibration_reasons.append("default_soil")
+            scientific_reasons.append("default_soil")
         if bool(environment["severe_issue"]):
-            calibration_reasons.append("severe_issue")
+            scientific_reasons.append("severe_issue")
+
+        calibration_reasons = list(scientific_reasons)
+        if year not in config.selection.calibration_years:
+            calibration_reasons.append("not_calibration_year")
+        evaluation_reasons = list(scientific_reasons)
+        if year not in config.selection.evaluation_years:
+            evaluation_reasons.append("not_evaluation_year")
 
         scan_reasons = list(base_reasons)
         scan_weather_reason = _scan_weather_reason(
@@ -209,9 +212,23 @@ def evaluate_eligibility(
                     )
                     else None
                 ),
+                "population_source": unit.get("population_source"),
+                "population_source_count": unit.get("population_source_count"),
+                "soil_profile_source": soil["profile_source"],
+                "soil_texture_conflict": bool(soil["texture_conflict"]),
+                "data_quality": (
+                    "high"
+                    if soil["profile_source"] == "particle_fractions"
+                    and unit.get("population_source") == "plot_trimmed_median"
+                    else "standard"
+                ),
                 "calibration_eligible": not calibration_reasons,
                 "calibration_reason_codes": json.dumps(
                     calibration_reasons, separators=(",", ":")
+                ),
+                "evaluation_eligible": not evaluation_reasons,
+                "evaluation_reason_codes": json.dumps(
+                    evaluation_reasons, separators=(",", ":")
                 ),
                 "scan_eligible": not scan_reasons,
                 "scan_reason_codes": json.dumps(scan_reasons, separators=(",", ":")),

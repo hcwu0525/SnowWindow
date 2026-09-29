@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -72,9 +72,22 @@ def build_simulation_request(
 
     sowing = planting_date or unit["planting_date"]
     if not isinstance(sowing, date):
-        sowing = pd.Timestamp(sowing).date()
-    end_date, _ = simulation_end_for_planting(sowing)
+        timestamp = pd.Timestamp(sowing)
+        if pd.isna(timestamp):
+            raise ValueError("planting date is missing")
+        sowing = timestamp.date()
     dates = pd.to_datetime(weather["date"], errors="raise")
+    horizon_days = model_parameters.get("simulation_horizon_days")
+    planned_end = (
+        sowing + timedelta(days=int(horizon_days))
+        if horizon_days is not None
+        else simulation_end_for_planting(sowing)[0]
+    )
+    valid_dates = dates.dropna()
+    if valid_dates.empty:
+        raise ValueError(f"weather is empty for {environment['environment_id']}")
+    weather_end = valid_dates.max().date()
+    end_date = min(planned_end, weather_end)
     subset = weather.loc[
         dates.between(pd.Timestamp(sowing.year, 1, 1), pd.Timestamp(end_date))
     ].copy()
@@ -93,9 +106,9 @@ def build_simulation_request(
         environment_id=str(environment["environment_id"]),
         planting_date=sowing,
         population_plants_m2=(
-            float(unit["population_plants_m2"])
-            if unit.get("population_plants_m2") is not None
-            and pd.notna(unit.get("population_plants_m2"))
+            float(unit["population_plants_ha"]) / 10_000
+            if unit.get("population_plants_ha") is not None
+            and pd.notna(unit.get("population_plants_ha"))
             else None
         ),
         irrigation_assumption=str(
@@ -177,7 +190,86 @@ def _sha256_file(path: Path) -> str:
 def load_cached_power_weather(
     config: ExperimentConfig, environment_id: str
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Load audited current/next-year POWER forcing from the legacy cache."""
+    """Load audited current/next-year POWER forcing from the prepared tables."""
+
+    weather_path = config.experiment_dir / "normalized/weather.parquet"
+    if not weather_path.is_file():
+        raise FileNotFoundError(f"prepared weather table is missing: {weather_path}")
+    frame = pd.read_parquet(
+        weather_path,
+        columns=["environment_id", "date", *WEATHER_COLUMNS, "source_filename"],
+    )
+    environment_rows = frame.loc[frame["environment_id"].eq(environment_id)].copy()
+    environment_rows["date"] = pd.to_datetime(
+        environment_rows["date"]
+    ).dt.date
+    weather = environment_rows.sort_values("date").reset_index(drop=True)
+    provenance = {
+        "source": "G2F full-year NASA POWER forcing",
+        "files": [
+            {
+                "path": str(weather_path),
+                "sha256": _sha256_file(weather_path),
+            }
+        ],
+        "elevation_m": 0.0,
+    }
+    return weather, provenance
+
+    # Retained legacy loader for explicit cross-year POWER cache users.
+    current = config.output_dir / "aquacrop_demo/weather" / f"{environment_id}.csv"
+    continuation = (
+        config.output_dir
+        / "aquacrop_crossyear/weather"
+        / f"{environment_id}_next_year.csv"
+    )
+    current_provenance = (
+        config.output_dir
+        / "aquacrop_demo/weather_raw"
+        / f"{environment_id}.provenance.json"
+    )
+    continuation_provenance = (
+        config.output_dir
+        / "aquacrop_crossyear/weather_raw"
+        / f"{environment_id}_next_year.provenance.json"
+    )
+    required = (current, continuation, current_provenance, continuation_provenance)
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "complete cached POWER forcing is missing: " + ", ".join(missing)
+        )
+    frames = []
+    for path in (current, continuation):
+        current_frame = pd.read_csv(path, usecols=["Date", *WEATHER_COLUMNS])
+        current_frame = current_frame.rename(columns={"Date": "date"})
+        current_frame["date"] = pd.to_datetime(current_frame["date"]).dt.date
+        current_frame["source"] = str(path)
+        frames.append(current_frame)
+    weather = (
+        pd.concat(frames, ignore_index=True)
+        .sort_values("date")
+        .drop_duplicates("date", keep="first")
+        .reset_index(drop=True)
+    )
+    provenance_rows = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (current_provenance, continuation_provenance)
+    ]
+    provenance = {
+        "source": "NASA POWER AG cached full-year forcing",
+        "files": [
+            {"path": str(path), "sha256": _sha256_file(path)} for path in required
+        ],
+        "elevation_m": float(provenance_rows[0].get("elevation_m", 0.0)),
+    }
+    return weather, provenance
+
+
+def load_legacy_crossyear_weather(
+    config: ExperimentConfig, environment_id: str
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Load the explicit legacy current/next-year POWER cache."""
 
     current = config.output_dir / "aquacrop_demo/weather" / f"{environment_id}.csv"
     continuation = (
@@ -218,14 +310,13 @@ def load_cached_power_weather(
         json.loads(path.read_text(encoding="utf-8"))
         for path in (current_provenance, continuation_provenance)
     ]
-    provenance = {
+    return weather, {
         "source": "NASA POWER AG cached full-year forcing",
         "files": [
             {"path": str(path), "sha256": _sha256_file(path)} for path in required
         ],
         "elevation_m": float(provenance_rows[0].get("elevation_m", 0.0)),
     }
-    return weather, provenance
 
 
 def build_observed_requests(
@@ -247,7 +338,14 @@ def build_observed_requests(
     provenance_rows = []
     for unit in units.to_dict("records"):
         environment_id = str(unit["environment_id"])
-        weather, provenance = load_cached_power_weather(config, environment_id)
+        loader = (
+            load_legacy_crossyear_weather
+            if config.model.name == "apsim"
+            else load_cached_power_weather
+        )
+        weather, provenance = loader(config, environment_id)
+        if weather.empty:
+            continue
         environment = environments.loc[environment_id].to_dict()
         environment["environment_id"] = environment_id
         environment["elevation_m"] = provenance["elevation_m"]

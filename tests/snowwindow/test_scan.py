@@ -18,6 +18,7 @@ from snowwindow.scan import (
     calendar_dates,
     derive_planting_windows,
     native_scan_requests,
+    run_simulation_requests,
     scan_stage,
 )
 
@@ -25,6 +26,72 @@ from snowwindow.scan import (
 def test_calendar_dates_preserve_leap_year() -> None:
     assert len(calendar_dates(2023)) == 365
     assert len(calendar_dates(2024)) == 366
+
+
+def test_batch_adapter_runs_once_per_environment_and_parameter_group() -> None:
+    first = SimulationRequest(
+        request_id="a-default-1",
+        environment=Environment(
+            environment_id="A_2022",
+            year=2022,
+            location="A",
+            latitude=40.0,
+            longitude=-90.0,
+        ),
+        management=ManagementUnit(
+            management_unit_id="a",
+            environment_id="A_2022",
+            planting_date=date(2022, 1, 1),
+        ),
+        start_date=date(2022, 1, 1),
+        end_date=date(2022, 12, 31),
+        parameter_set_id="default",
+    )
+    requests = (
+        first,
+        SimulationRequest(
+            request_id="a-default-2",
+            environment=first.environment,
+            management=ManagementUnit(
+                management_unit_id="a",
+                environment_id="A_2022",
+                planting_date=date(2022, 1, 2),
+            ),
+            start_date=first.start_date,
+            end_date=first.end_date,
+            parameter_set_id="default",
+        ),
+        SimulationRequest(
+            request_id="a-calibrated",
+            environment=first.environment,
+            management=first.management,
+            start_date=first.start_date,
+            end_date=first.end_date,
+            parameter_set_id="calibrated",
+        ),
+    )
+
+    class BatchAdapter:
+        def __init__(self) -> None:
+            self.batch_sizes = []
+
+        def run_many(self, batch):
+            self.batch_sizes.append(len(batch))
+            return {
+                request.request_id: SimulationResult(
+                    request_id=request.request_id,
+                    adapter_name="batch",
+                    adapter_version="1",
+                    status=RunStatus.MATURED,
+                )
+                for request in batch
+            }
+
+    adapter = BatchAdapter()
+    results = run_simulation_requests(requests, adapter, workers=1)
+
+    assert sorted(adapter.batch_sizes) == [1, 2]
+    assert set(results) == {request.request_id for request in requests}
 
 
 def test_windows_use_only_mature_positive_yield_and_preserve_segments() -> None:
@@ -84,6 +151,8 @@ simulation:
     default: {}
     calibrated:
       source: calibration
+    site_calibrated:
+      source: site_calibration
 """.strip(),
         encoding="utf-8",
     )
@@ -167,6 +236,15 @@ simulation:
             }
         ]
     ).to_parquet(calibration_dir / "parameters.parquet", index=False)
+    pd.DataFrame(
+        [
+            {
+                "site": "A",
+                "HI0_site": 1.2,
+                "phenology_scale_site": 1.1,
+            }
+        ]
+    ).to_parquet(calibration_dir / "site_offsets.parquet", index=False)
 
     class RecordingAdapter:
         name = "fake"
@@ -190,10 +268,11 @@ simulation:
     adapter = RecordingAdapter()
     requests = native_scan_requests(config, adapter)
 
-    assert len(requests) == 8
+    assert len(requests) == 12
     assert {request.parameter_set_id for request in requests} == {
         "default",
         "calibrated",
+        "site_calibrated",
     }
     assert {request.management.planting_date for request in requests} == {
         date(2022, 1, 1),
@@ -216,6 +295,19 @@ simulation:
         request.model_parameters["phenology_scale"] == 0.95 for request in calibrated
     )
     assert all(request.model_parameters["HI0"] == 0.35 for request in calibrated)
+    site_calibrated = [
+        request for request in requests if request.parameter_set_id == "site_calibrated"
+    ]
+    assert all(
+        request.model_parameters["HI0_site"] == 1.2
+        for request in site_calibrated
+        if request.environment.environment_id == "A_2022"
+    )
+    assert all(
+        "HI0_site" not in request.model_parameters
+        for request in site_calibrated
+        if request.environment.environment_id == "B_2022"
+    )
 
 
 def test_scan_stage_executes_every_request_and_preserves_status(
@@ -295,6 +387,11 @@ simulation:
                 adapter_version=self.version,
                 status=status,
                 summary={
+                    **(
+                        {"planting_date": request.management.planting_date.isoformat()}
+                        if status is RunStatus.MATURED
+                        else {}
+                    ),
                     "dry_yield_mg_ha": 10.0
                     if status is RunStatus.MATURED
                     else None

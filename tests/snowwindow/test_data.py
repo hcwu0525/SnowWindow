@@ -18,11 +18,14 @@ from snowwindow.config import (
 from snowwindow.data import (
     DataPreparationError,
     PreparationResult,
+    add_density_to_management_units,
     aggregate_representative_maize,
     audit_g2f,
     audit_weather_coverage,
     classify_severe_issue,
+    classify_usda_texture,
     derive_soil_profiles,
+    evaluate_eligibility,
     normalize_irrigation,
     parse_g2f_date,
     prepare_g2f,
@@ -437,6 +440,256 @@ def test_soil_profiles_include_default_category_in_modal_selection() -> None:
         "Loam",
         "Loam",
     ]
+
+
+@pytest.mark.parametrize(
+    ("sand", "clay", "expected"),
+    [
+        (40, 20, "Loam"),
+        (65, 10, "Sandy Loam"),
+        (20, 40, "Clay Loam"),
+        (10, 45, "Silty Clay"),
+        (90, 5, "Sand"),
+    ],
+)
+def test_usda_texture_triangle_maps_particle_fractions(sand, clay, expected) -> None:
+    assert classify_usda_texture(sand, clay) == expected
+
+
+def test_usda_texture_triangle_requires_valid_fractions() -> None:
+    with pytest.raises(DataPreparationError):
+        classify_usda_texture(80, 30)
+
+
+def test_soil_profiles_use_particle_fractions_before_texture_labels() -> None:
+    environments = pd.DataFrame(
+        [{"environment_id": "A_2022"}, {"environment_id": "B_2022"}]
+    )
+    samples = pd.DataFrame(
+        [
+            {
+                "environment_id": "A_2022",
+                "texture": "Loam",
+                "sand_percent": 65,
+                "silt_percent": 25,
+                "clay_percent": 10,
+                "soil_ph": 6.2,
+                "raw_sample_depth": 12,
+            },
+            {
+                "environment_id": "B_2022",
+                "texture": "Loam",
+                "sand_percent": 40,
+                "silt_percent": 40,
+                "clay_percent": 20,
+            },
+        ]
+    )
+
+    profiles = derive_soil_profiles(
+        environments, samples, default_texture="Loam"
+    ).set_index("environment_id")
+
+    assert profiles.loc["A_2022", "texture"] == "Sandy Loam"
+    assert profiles.loc["A_2022", "aquacrop_soil_type"] == "SandyLoam"
+    assert profiles.loc["A_2022", "profile_source"] == "particle_fractions"
+    assert profiles.loc["A_2022", "particle_fraction_sample_count"] == 1
+    assert profiles.loc["A_2022", "representative_depth_m"] == 0.12
+    assert profiles.loc["A_2022", "representative_soil_ph"] == pytest.approx(6.2)
+    assert profiles.loc["B_2022", "profile_source"] == "particle_fractions"
+    assert pd.isna(profiles.loc["B_2022", "representative_depth_m"])
+
+
+def test_management_density_uses_trimmed_median_and_default_fallback() -> None:
+    units = pd.DataFrame(
+        [
+            {"management_unit_id": "a", "environment_id": "A_2022", "year": 2022},
+            {"management_unit_id": "b", "environment_id": "B_2022", "year": 2022},
+            {"management_unit_id": "c", "environment_id": "C_2022", "year": 2022},
+        ]
+    )
+    plots = pd.DataFrame(
+        [
+            {
+                "management_unit_id": "a",
+                "environment_id": "A_2022",
+                "stand_count_plants": 70,
+                "plot_area_ha": 0.001,
+            },
+            {
+                "management_unit_id": "a",
+                "environment_id": "A_2022",
+                "stand_count_plants": 90,
+                "plot_area_ha": 0.001,
+            },
+            {
+                "management_unit_id": "a",
+                "environment_id": "A_2022",
+                "stand_count_plants": 1,
+                "plot_area_ha": 0.001,
+            },
+            {
+                "management_unit_id": "b",
+                "environment_id": "B_2022",
+                "stand_count_plants": 80,
+                "plot_area_ha": 0.001,
+            },
+            {
+                "management_unit_id": "c",
+                "environment_id": "C_2022",
+                "stand_count_plants": None,
+                "plot_area_ha": 0.001,
+            },
+        ]
+    )
+
+    result = add_density_to_management_units(
+        units,
+        plots,
+        minimum_density=20000,
+        maximum_density=160000,
+        default_density=75000,
+    ).set_index("management_unit_id")
+    population_source = result["population_source"]
+
+    assert result.loc["a", "population_plants_ha"] == pytest.approx(80000)
+    assert population_source.loc["a"] == "plot_trimmed_median"
+    assert result.loc["a", "population_source_count"] == 2
+    assert result.loc["b", "population_plants_ha"] == pytest.approx(80000)
+    assert result.loc["c", "population_plants_ha"] == pytest.approx(75000)
+    assert population_source.loc["c"] == "default"
+
+
+def test_eligibility_keeps_confirmed_irrigated_units_and_records_quality() -> None:
+    config = _config(Path("/tmp/data"), Path("/tmp/outputs"))
+    management_units = pd.DataFrame(
+        [
+            {
+                "management_unit_id": "irrigated",
+                "environment_id": "A_2022",
+                "year": 2022,
+                "planting_date": date(2022, 5, 1),
+                "irrigation_status": "irrigated_confirmed",
+                "population_source": "plot_trimmed_median",
+                "population_source_count": 10,
+            }
+        ]
+    )
+    environments = pd.DataFrame(
+        [
+            {
+                "environment_id": "A_2022",
+                "latitude": 40.0,
+                "longitude": -90.0,
+                "irrigation_status": "irrigated_confirmed",
+                "severe_issue": False,
+            }
+        ]
+    )
+    observations = pd.DataFrame(
+        [
+            {
+                "management_unit_id": "irrigated",
+                "variable": "pollen_dap",
+                "value": 65.0,
+            },
+            {
+                "management_unit_id": "irrigated",
+                "variable": "yield_at_supplied_moisture_mg_ha",
+                "value": 10.0,
+            },
+        ]
+    )
+    soil_profiles = pd.DataFrame(
+        [
+            {
+                "environment_id": "A_2022",
+                "profile_source": "particle_fractions",
+                "texture_conflict": False,
+            }
+        ]
+    )
+    weather = {"A_2022": {"calendar_complete": True}}
+
+    eligibility = evaluate_eligibility(
+        config,
+        management_units,
+        environments,
+        observations,
+        soil_profiles,
+        weather,
+    )
+
+    row = eligibility.set_index("management_unit_id").loc["irrigated"]
+    assert bool(row["calibration_eligible"]) is True
+    assert row["irrigation_assumption"] == "irrigated_confirmed"
+    assert row["population_source"] == "plot_trimmed_median"
+    assert row["soil_profile_source"] == "particle_fractions"
+    assert row["data_quality"] == "high"
+
+
+def test_eligibility_separates_calibration_and_evaluation_years() -> None:
+    config = _config(Path("/tmp/data"), Path("/tmp/outputs"))
+    management_units = pd.DataFrame(
+        [
+            {
+                "management_unit_id": "evaluation",
+                "environment_id": "B_2024",
+                "year": 2024,
+                "planting_date": date(2024, 5, 1),
+                "irrigation_status": "rainfed_confirmed",
+            }
+        ]
+    )
+    environments = pd.DataFrame(
+        [
+            {
+                "environment_id": "B_2024",
+                "latitude": 40.0,
+                "longitude": -90.0,
+                "irrigation_status": "rainfed_confirmed",
+                "severe_issue": False,
+            }
+        ]
+    )
+    observations = pd.DataFrame(
+        [
+            {
+                "management_unit_id": "evaluation",
+                "variable": "pollen_dap",
+                "value": 65.0,
+            },
+            {
+                "management_unit_id": "evaluation",
+                "variable": "yield_at_supplied_moisture_mg_ha",
+                "value": 10.0,
+            },
+        ]
+    )
+    soil_profiles = pd.DataFrame(
+        [
+            {
+                "environment_id": "B_2024",
+                "profile_source": "particle_fractions",
+                "texture_conflict": False,
+            }
+        ]
+    )
+
+    eligibility = evaluate_eligibility(
+        config,
+        management_units,
+        environments,
+        observations,
+        soil_profiles,
+        {"B_2024": {"calendar_complete": True}},
+    )
+
+    row = eligibility.set_index("management_unit_id").loc["evaluation"]
+    assert bool(row["calibration_eligible"]) is False
+    assert bool(row["evaluation_eligible"]) is True
+    assert json.loads(row["calibration_reason_codes"]) == ["not_calibration_year"]
+    assert json.loads(row["evaluation_reason_codes"]) == []
 
 
 def test_representative_maize_weights_hybrid_means_equally() -> None:

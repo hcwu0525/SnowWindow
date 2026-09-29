@@ -1,0 +1,38 @@
+experiment_id: g2f_aquacrop_refined
+data_dir: ../data
+output_dir: ../outputs
+
+model:
+  name: aquacrop
+  parameters:
+    crop: MaizeGDD
+    model_version: "3.1.0"
+    grain_standard_moisture_fraction: 0.155
+    default_soil_texture: Loam
+    irrigation_smt: [70, 75, 80, 70]
+
+selection:
+  environments: []
+  all_eligible_environments: true
+  calibration_years: [2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022]
+  evaluation_years: [2023]
+  allow_assumed_rainfed: true
+  exclude_default_soil_from_calibration: true
+  phenology_scale_grid: [0.8, 1.2, 0.02]
+  phenology_scale_fine_step: 0.005
+  harvest_index_grid: [0.35, 0.55, 0.01]
+  harvest_index_fine_step: 0.0025
+  site_offset_minimum_years: 3
+
+simulation:
+  scan_fractions: [0.90, 0.95]
+  scan_all_dates: true
+  scan_horizon: cross_year
+  continuation_weather_by_environment: {}
+  workers: 8
+  parameter_sets:
+    default: {}
+    calibrated:
+      source: calibration
+    site_calibrated:
+      source: site_calibration

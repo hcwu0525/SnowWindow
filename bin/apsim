@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+snowwindow_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+apsim_dir="$snowwindow_root/.tools/apsim/2026.9.8116.0"
+export DOTNET_ROOT="$snowwindow_root/.tools/dotnet/8.0.31"
+
+if [[ ! -x "$DOTNET_ROOT/dotnet" || ! -f "$apsim_dir/bin/Models.dll" ]]; then
+    printf '%s\n' "APSIM or .NET is missing under $snowwindow_root/.tools; see README.md." >&2
+    exit 1
+fi
+
+export LD_LIBRARY_PATH="$apsim_dir/native-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$DOTNET_ROOT/dotnet" "$apsim_dir/bin/Models.dll" "$@"

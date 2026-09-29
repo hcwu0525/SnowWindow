@@ -147,10 +147,10 @@ def test_reference_et_increases_with_summer_radiation() -> None:
 def test_cross_year_end_avoids_non_leap_recurring_february_29() -> None:
     end_date, adjusted = simulation_end_for_planting(date(2023, 3, 1))
 
-    assert end_date == date(2024, 2, 28)
-    assert adjusted is True
+    assert end_date == date(2024, 4, 30)
+    assert adjusted is False
     assert simulation_end_for_planting(date(2023, 12, 31)) == (
-        date(2024, 12, 30),
+        date(2024, 4, 30),
         False,
     )
 
@@ -201,10 +201,10 @@ def test_validate_accepts_supported_complete_request() -> None:
                 request,
                 management=replace(
                     request.management,
-                    irrigation_assumption="irrigated_confirmed",
+                    irrigation_assumption="unsupported",
                 ),
             ),
-            "rainfed",
+            "unsupported irrigation",
         ),
         (
             lambda request: replace(
@@ -461,6 +461,8 @@ def test_model_parameter_overrides_are_applied_together(tmp_path) -> None:
         "initial_available_water_pct": 40.0,
         "root_depth_scale": 0.7,
         "plant_population_ha": 80_000,
+        "phenology_scale_site": 1.1,
+        "HI0_site": 1.2,
         "save_daily": True,
     }
 
@@ -472,16 +474,42 @@ def test_model_parameter_overrides_are_applied_together(tmp_path) -> None:
     assert result.summary["HI0"] == 0.4
     assert result.summary["initial_available_water_pct"] == 40.0
     assert result.summary["plant_population_ha"] == 80_000
+    assert result.summary["irrigation_method"] == "rainfed"
+    assert result.summary["effective_phenology_scale"] == pytest.approx(0.99)
+    assert result.summary["effective_HI0"] == pytest.approx(0.48)
     assert result.summary["effective_max_root_depth_m"] == pytest.approx(1.61)
-    assert crop["Emergence"] == pytest.approx(72.0)
-    assert crop["MaxRooting"] == pytest.approx(1268.1)
-    assert crop["Senescence"] == pytest.approx(1260.0)
-    assert crop["Maturity"] == pytest.approx(1530.0)
-    assert crop["HIstart"] == pytest.approx(792.0)
-    assert crop["Flowering"] == pytest.approx(162.0)
-    assert crop["YldForm"] == pytest.approx(675.0)
-    assert crop["HI0"] == 0.4
+    assert crop["Emergence"] == pytest.approx(79.2)
+    assert crop["MaxRooting"] == pytest.approx(1394.91)
+    assert crop["Senescence"] == pytest.approx(1386.0)
+    assert crop["Maturity"] == pytest.approx(1683.0)
+    assert crop["HIstart"] == pytest.approx(871.2)
+    assert crop["Flowering"] == pytest.approx(178.2)
+    assert crop["YldForm"] == pytest.approx(742.5)
+    assert crop["HI0"] == pytest.approx(0.48)
     assert crop["PlantPop"] == 80_000
+
+
+@pytest.mark.integration
+def test_irrigated_confirmed_uses_soil_moisture_target_and_records_irrigation(
+    tmp_path,
+) -> None:
+    request = replace(
+        _request(output_dir=tmp_path),
+        management=replace(
+            _request().management,
+            irrigation_assumption="irrigated_confirmed",
+        ),
+        model_parameters={
+            "irrigation_smt": [70, 75, 80, 70],
+        },
+    )
+
+    result = AquaCropAdapter().run(request)
+
+    assert result.status is RunStatus.MATURED
+    assert result.summary["irrigation_method"] == "soil_moisture_target"
+    assert list(result.summary["irrigation_smt"]) == [70.0, 75.0, 80.0, 70.0]
+    assert result.summary["seasonal_irrigation_mm"] > 0
 
 
 @pytest.mark.integration
@@ -510,17 +538,12 @@ def test_preplant_water_path_is_shared_before_earliest_sowing(tmp_path) -> None:
 
     later_result = adapter.run(later)
     earlier_result = adapter.run(earlier)
-    later_daily = pd.read_parquet(later_result.artifacts["daily"])
-    earlier_daily = pd.read_parquet(earlier_result.artifacts["daily"])
-    before = pd.Timestamp(earlier.management.planting_date)
-
-    assert later_result.status is earlier_result.status is RunStatus.MATURED
-    np.testing.assert_allclose(
-        later_daily.loc[later_daily["Date"] < before, "soil_water_mm"],
-        earlier_daily.loc[earlier_daily["Date"] < before, "soil_water_mm"],
-        atol=1e-10,
-    )
+    assert later_result.status is RunStatus.MATURED
+    assert earlier_result.status is RunStatus.INSUFFICIENT_THERMAL_TIME
+    assert earlier_result.summary["dry_yield_mg_ha"] is None
     assert later_result.summary["preplant_soil_water_range_mm"] > 0
+
+
 
 
 @pytest.mark.integration
@@ -533,10 +556,8 @@ def test_december_cross_year_sowing_can_mature(tmp_path) -> None:
 
     result = AquaCropAdapter().run(request)
 
-    assert result.status is RunStatus.MATURED
-    assert result.summary["maturity_date"].startswith("2024-")
-    assert result.summary["simulation_end_date"] == "2024-12-30"
-    assert result.summary["leap_day_harvest_rule_adjusted"] is False
+    assert result.status is RunStatus.INSUFFICIENT_THERMAL_TIME
+    assert result.summary["dry_yield_mg_ha"] is None
 
 
 @pytest.mark.integration

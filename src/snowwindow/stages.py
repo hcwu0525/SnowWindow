@@ -12,6 +12,7 @@ import pandas as pd
 
 from snowwindow.adapters import ModelAdapter, resolve_model_adapter
 from snowwindow.calibration import (
+    apply_site_offsets,
     freeze_observation_set,
     make_validation_folds,
     run_coarse_fine_calibration,
@@ -98,6 +99,25 @@ def simulate_stage(
     return baseline_stage(config, adapter)
 
 
+def simulation_parameter_sets(
+    model_name: str,
+    calibrated_parameters: dict[str, float],
+    site_overrides: dict[str, dict[str, float]],
+) -> dict[str, dict[str, Any]]:
+    """Return validation parameter groups supported by a model."""
+
+    parameter_sets: dict[str, dict[str, Any]] = {
+        "default": {},
+        "calibrated": calibrated_parameters,
+    }
+    if model_name not in ("apsim", "dssat"):
+        parameter_sets["site_calibrated"] = {
+            **calibrated_parameters,
+            "site_overrides": site_overrides,
+        }
+    return parameter_sets
+
+
 def calibration_stage(
     config: ExperimentConfig, adapter: ModelAdapter | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -123,8 +143,21 @@ def calibration_stage(
         calibration_years=config.selection.calibration_years,
         environments=config.selection.environments,
     )
+    evaluation_ids = set()
+    if "evaluation_eligible" in tables["eligibility"]:
+        evaluation_ids = set(
+            tables["eligibility"].loc[
+                tables["eligibility"]["evaluation_eligible"].astype(bool),
+                "management_unit_id",
+            ]
+        )
     validation_units = select_representative_units(
-        tables["management_units"], config.selection.environments
+        tables["management_units"].loc[
+            tables["management_units"]["management_unit_id"].isin(
+                evaluation_ids | eligible_ids
+            )
+        ],
+        config.selection.environments,
     )
     request_units = (
         pd.concat([units, validation_units], ignore_index=True)
@@ -132,21 +165,69 @@ def calibration_stage(
         .reset_index(drop=True)
     )
     requests, _ = build_observed_requests(config, units=request_units)
-    folds = make_validation_folds(
+    calibration_units = (
         pd.concat([units, validation_units], ignore_index=True)
         .drop_duplicates("management_unit_id")
-        .reset_index(drop=True),
+        .reset_index(drop=True)
+    )
+    folds = make_validation_folds(
+        calibration_units,
         calibration_years=config.selection.calibration_years,
         evaluation_years=config.selection.evaluation_years,
     )
+    if model.name in ("apsim", "dssat"):
+        folds = tuple(fold for fold in folds if fold["name"] == "held_year")
     parameter_rows = []
     search_frames = []
+    held_year_parameters = None
     options = config.selection.options
+    apsim = model.name == "apsim"
+    dssat = model.name == "dssat"
+    phenology_parameter_name = (
+        "P1" if dssat else ("juvenile_tt" if apsim else "phenology_scale")
+    )
+    yield_parameter_name = "G2" if dssat else ("grain_number_scale" if apsim else "HI0")
+    default_phenology = 259.0 if dssat else (211.0 if apsim else 1.0)
+    default_yield = 924.3 if dssat else (1.0 if apsim else 0.48)
     phenology_coarse = tuple(
-        float(value) for value in options.get("phenology_scale_grid", (0.8, 1.2, 0.02))
+        float(value)
+        for value in options.get(
+            "P1_grid"
+            if dssat
+            else ("juvenile_tt_grid" if apsim else "phenology_scale_grid"),
+            (150.0, 350.0, 50.0)
+            if dssat
+            else ((100.0, 350.0, 25.0) if apsim else (0.8, 1.2, 0.02)),
+        )
     )
     hi0_coarse = tuple(
-        float(value) for value in options.get("harvest_index_grid", (0.35, 0.55, 0.01))
+        float(value)
+        for value in options.get(
+            "G2_grid"
+            if dssat
+            else ("grain_number_scale_grid" if apsim else "harvest_index_grid"),
+            (700.0, 950.0, 50.0)
+            if dssat
+            else ((0.5, 1.5, 0.1) if apsim else (0.35, 0.55, 0.01)),
+        )
+    )
+    phenology_fine_step = float(
+        options.get(
+            "P1_fine_step"
+            if dssat
+            else ("juvenile_tt_fine_step" if apsim else "phenology_scale_fine_step"),
+            10.0 if dssat else (5.0 if apsim else 0.005),
+        )
+    )
+    yield_fine_step = float(
+        options.get(
+            "G2_fine_step"
+            if dssat
+            else (
+                "grain_number_scale_fine_step" if apsim else "harvest_index_fine_step"
+            ),
+            10.0 if dssat else (0.02 if apsim else 0.0025),
+        )
     )
     for fold in folds:
         if not fold["train_ids"]:
@@ -156,10 +237,14 @@ def calibration_stage(
             requests,
             fixed,
             training_ids=fold["train_ids"],
+            default_phenology=default_phenology,
+            default_hi0=default_yield,
             phenology_coarse=phenology_coarse,
-            phenology_fine_step=float(options.get("phenology_scale_fine_step", 0.005)),
+            phenology_fine_step=phenology_fine_step,
             hi0_coarse=hi0_coarse,
-            hi0_fine_step=float(options.get("harvest_index_fine_step", 0.0025)),
+            hi0_fine_step=yield_fine_step,
+            phenology_parameter_name=phenology_parameter_name,
+            yield_parameter_name=yield_parameter_name,
         )
         fingerprints = getattr(model, "source_fingerprints", {})
         parameter_rows.append(
@@ -174,12 +259,41 @@ def calibration_stage(
                 **dict(fingerprints),
             }
         )
+        if fold["name"] == "held_year":
+            held_year_parameters = parameter_rows[-1]
         search = calibrated.search.copy()
         search.insert(0, "fold", fold["name"])
         for key, value in dict(fingerprints).items():
             search[key] = value
         search_frames.append(search)
     parameters = pd.DataFrame(parameter_rows).sort_values("fold").reset_index(drop=True)
+    site_offsets = pd.DataFrame()
+    if held_year_parameters is not None and not (apsim or dssat):
+        global_parameters = {
+            "phenology_scale": float(held_year_parameters["phenology_scale"]),
+            "HI0": float(held_year_parameters["HI0"]),
+        }
+        training_split = {
+            unit_id: "train"
+            for unit_id in json.loads(held_year_parameters["train_ids"])
+        }
+        global_predictions, _ = validate_parameter_sets(
+            model,
+            requests,
+            fixed,
+            fold_name="site_offset_training",
+            split_by_unit=training_split,
+            parameter_sets={"global": global_parameters},
+        )
+        site_offsets = apply_site_offsets(
+            fixed,
+            global_predictions,
+            parameter_set_id="global",
+            site_parameter_set_id="site_calibrated",
+            minimum_training_years=int(
+                config.selection.options.get("site_offset_minimum_years", 3)
+            ),
+        )
     search = pd.concat(search_frames, ignore_index=True)
     root = config.experiment_dir / "calibration"
     configured_eligibility = (
@@ -206,6 +320,7 @@ def calibration_stage(
     _atomic_table(root / "fixed_observations.parquet", fixed)
     _atomic_table(root / "exclusions.parquet", exclusions)
     _atomic_table(root / "parameters.parquet", parameters)
+    _atomic_table(root / "site_offsets.parquet", site_offsets)
     _atomic_table(root / "search.parquet", search)
     _atomic_json(root / "parameters.json", parameters.to_dict("records"))
     _atomic_json(
@@ -217,11 +332,11 @@ def calibration_stage(
             "fixed_observation_ids": fixed["observation_id"].tolist(),
             "grid": {
                 "phenology_coarse": phenology_coarse,
-                "phenology_fine_step": float(
-                    options.get("phenology_scale_fine_step", 0.005)
-                ),
+                "phenology_parameter_name": phenology_parameter_name,
+                "phenology_fine_step": phenology_fine_step,
                 "hi0_coarse": hi0_coarse,
-                "hi0_fine_step": float(options.get("harvest_index_fine_step", 0.0025)),
+                "yield_parameter_name": yield_parameter_name,
+                "hi0_fine_step": yield_fine_step,
             },
             "parameters": parameters.to_dict("records"),
         },
@@ -239,6 +354,19 @@ def validation_stage(
     if not parameter_path.is_file() or not observation_path.is_file():
         raise FileNotFoundError("calibration artifacts are missing")
     parameters = pd.read_parquet(parameter_path)
+    site_offsets = pd.DataFrame()
+    site_offset_path = root / "site_offsets.parquet"
+    if site_offset_path.is_file():
+        site_offsets = pd.read_parquet(site_offset_path)
+    site_overrides: dict[str, dict[str, float]] = {}
+    if not site_offsets.empty:
+        site_overrides = {
+            str(offset["site"]): {
+                "HI0_site": float(offset["HI0_site"]),
+                "phenology_scale_site": float(offset["phenology_scale_site"]),
+            }
+            for offset in site_offsets.to_dict("records")
+        }
     tables = load_prepared_tables(config)
     observations = tables["observations"].copy()
     observations["observation_id"] = (
@@ -258,19 +386,29 @@ def validation_stage(
         split_by_unit = {
             unit_id: split_by_unit[unit_id] for unit_id in sorted(selected_ids)
         }
+        apsim = model.name == "apsim"
+        dssat = model.name == "dssat"
+        phenology_parameter_name = (
+            "P1" if dssat else ("juvenile_tt" if apsim else "phenology_scale")
+        )
+        yield_parameter_name = (
+            "G2" if dssat else ("grain_number_scale" if apsim else "HI0")
+        )
+        calibrated_parameters = {
+            phenology_parameter_name: float(row[phenology_parameter_name]),
+            yield_parameter_name: float(row[yield_parameter_name]),
+        }
         predictions, metrics = validate_parameter_sets(
             model,
             requests,
             observations,
             fold_name=row["fold"],
             split_by_unit=split_by_unit,
-            parameter_sets={
-                "default": {},
-                "calibrated": {
-                    "phenology_scale": float(row["phenology_scale"]),
-                    "HI0": float(row["HI0"]),
-                },
-            },
+            parameter_sets=simulation_parameter_sets(
+                model.name,
+                calibrated_parameters,
+                site_overrides,
+            ),
         )
         prediction_frames.append(predictions)
         metric_frames.append(metrics)

@@ -2,7 +2,11 @@ from datetime import date
 
 import pytest
 
-from snowwindow.adapters import AdapterRegistry, resolve_model_adapter
+from snowwindow.adapters import (
+    AdapterRegistry,
+    default_adapter_registry,
+    resolve_model_adapter,
+)
 from snowwindow.domain import (
     Environment,
     ManagementUnit,
@@ -88,3 +92,7 @@ def test_resolve_model_adapter_reports_unknown_configured_model() -> None:
 
     with pytest.raises(ValueError, match="unknown configured model.*stub"):
         resolve_model_adapter(config, AdapterRegistry([StubAdapter()]))
+
+
+def test_default_registry_includes_all_crop_models() -> None:
+    assert default_adapter_registry().names() == ("apsim", "aquacrop", "dssat")

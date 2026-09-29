@@ -59,9 +59,11 @@ class AdapterRegistry:
 def default_adapter_registry() -> AdapterRegistry:
     """Return the registry containing SnowWindow's built-in adapters."""
 
-    from snowwindow.models.aquacrop import default_adapter_registry as aquacrop
+    from snowwindow.models.apsim import APSIMAdapter
+    from snowwindow.models.aquacrop import AquaCropAdapter
+    from snowwindow.models.dssat import DSSATAdapter
 
-    return aquacrop()
+    return AdapterRegistry((AquaCropAdapter(), APSIMAdapter(), DSSATAdapter()))
 
 
 def resolve_model_adapter(

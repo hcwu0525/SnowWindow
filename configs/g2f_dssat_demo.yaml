@@ -1,0 +1,43 @@
+experiment_id: g2f_dssat_demo
+data_dir: ../data
+output_dir: ../outputs
+
+model:
+  name: dssat
+  parameters:
+    model_version: "4.8.6.2"
+    cultivar: IB0035
+    # CERES-Maize reference: P1 and G2 are calibrated against 2022 only.
+    P1: 259.0
+    G2: 924.3
+    simulation_horizon_days: 365
+    # Reference scenario (not site-observed):
+    # deep sandy loam IB00000007, 120 kg N/ha at planting,
+    # rainfed, no irrigation, initial soil water from soil profile.
+
+selection:
+  environments:
+    - INH1_2022
+    - MOH2_2022
+    - NYH2_2022
+    - INH1_2023
+    - MOH2_2023
+    - NYH2_2023
+  calibration_years: [2022]
+  evaluation_years: [2023]
+  allow_assumed_rainfed: true
+  exclude_default_soil_from_calibration: false
+  P1_grid: [150.0, 350.0, 50.0]
+  P1_fine_step: 10.0
+  G2_grid: [700.0, 950.0, 50.0]
+  G2_fine_step: 10.0
+
+simulation:
+  scan_fractions: [0.90, 0.95]
+  scan_all_dates: true
+  scan_horizon: cross_year
+  workers: 2
+  parameter_sets:
+    default: {}
+    calibrated:
+      source: calibration

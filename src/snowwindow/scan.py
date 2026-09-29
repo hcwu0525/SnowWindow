@@ -5,10 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 import uuid
 from calendar import isleap
 from collections.abc import Mapping
-from datetime import date
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +23,7 @@ from snowwindow.domain import SimulationRequest
 from snowwindow.experiment import (
     build_simulation_request,
     load_cached_power_weather,
+    load_legacy_crossyear_weather,
     load_prepared_tables,
     select_representative_units,
 )
@@ -140,15 +144,46 @@ def native_scan_requests(
     held_year = parameters.loc[parameters["fold"].eq("held_year")]
     if held_year.empty:
         raise ValueError("held_year calibration parameters are missing")
-    calibrated_parameters = {
-        "phenology_scale": float(held_year.iloc[0]["phenology_scale"]),
-        "HI0": float(held_year.iloc[0]["HI0"]),
-    }
+    if config.model.name == "dssat":
+        calibrated_parameters = {
+            "P1": float(held_year.iloc[0]["P1"]),
+            "G2": float(held_year.iloc[0]["G2"]),
+        }
+    elif config.model.name == "apsim":
+        calibrated_parameters = {
+            "juvenile_tt": float(held_year.iloc[0]["juvenile_tt"]),
+            "grain_number_scale": float(
+                held_year.iloc[0]["grain_number_scale"]
+            ),
+        }
+    else:
+        calibrated_parameters = {
+            "phenology_scale": float(held_year.iloc[0]["phenology_scale"]),
+            "HI0": float(held_year.iloc[0]["HI0"]),
+        }
+    site_offsets = pd.DataFrame()
+    site_offset_path = config.experiment_dir / "calibration/site_offsets.parquet"
+    if site_offset_path.is_file():
+        site_offsets = pd.read_parquet(site_offset_path)
+    site_offset_map: dict[str, dict[str, float]] = {}
+    if not site_offsets.empty:
+        site_offset_map = {
+            str(offset["site"]): {
+                "HI0_site": float(offset["HI0_site"]),
+                "phenology_scale_site": float(offset["phenology_scale_site"]),
+            }
+            for offset in site_offsets.to_dict("records")
+        }
 
     requests: list[SimulationRequest] = []
     for unit in units.sort_values("management_unit_id").to_dict("records"):
         environment_id = str(unit["environment_id"])
-        weather, _ = load_cached_power_weather(config, environment_id)
+        loader = (
+            load_legacy_crossyear_weather
+            if config.model.name in ("apsim", "dssat")
+            else load_cached_power_weather
+        )
+        weather, _ = loader(config, environment_id)
         environment = environments.loc[environment_id].to_dict()
         environment["environment_id"] = environment_id
         soil = soils.loc[environment_id].to_dict()
@@ -164,13 +199,62 @@ def native_scan_requests(
                     **dict(config.model.parameters),
                     **calibrated_parameters,
                 }
+            elif (
+                parameter_set_id == "site_calibrated"
+                and isinstance(parameter_values, Mapping)
+                and parameter_values.get("source") == "site_calibration"
+            ):
+                site = environment_id.rsplit("_", 1)[0]
+                model_parameters = {
+                    **dict(config.model.parameters),
+                    **calibrated_parameters,
+                    **site_offset_map.get(site, {}),
+                }
             else:
                 model_parameters = {
                     **dict(config.model.parameters),
                     **dict(parameter_values),
                 }
             year = int(environment["year"])
-            for planting_date in calendar_dates(year):
+            planting_dates = calendar_dates(year)
+            if config.model.name == "dssat":
+                # All dates share the same normalized weather records. Construct
+                # them once, then slice the immutable tuple for each horizon.
+                base = build_simulation_request(
+                    unit,
+                    environment,
+                    soil,
+                    weather,
+                    parameter_set_id=parameter_set_id,
+                    model_parameters=model_parameters,
+                    planting_date=planting_dates[-1],
+                    output_dir=config.experiment_dir / "model_cache",
+                )
+                for planting_date in planting_dates:
+                    horizon = int(model_parameters["simulation_horizon_days"])
+                    end_date = min(
+                        base.end_date, planting_date + timedelta(days=horizon)
+                    )
+                    count = (end_date - base.start_date).days + 1
+                    requests.append(
+                        replace(
+                            base,
+                            request_id=(
+                                f"{unit['management_unit_id']}::"
+                                f"{parameter_set_id}::{planting_date.isoformat()}"
+                            ),
+                            management=replace(
+                                base.management, planting_date=planting_date
+                            ),
+                            environment=replace(
+                                base.environment,
+                                weather=base.environment.weather[:count],
+                            ),
+                            end_date=end_date,
+                        )
+                    )
+                continue
+            for planting_date in planting_dates:
                 requests.append(
                     build_simulation_request(
                         unit,
@@ -200,6 +284,43 @@ def native_scan_requests(
     return tuple(requests)
 
 
+def run_simulation_requests(
+    requests: tuple[SimulationRequest, ...],
+    model: ModelAdapter,
+    *,
+    workers: int,
+) -> dict[str, Any]:
+    """Run scan requests, grouping adapters which support batch execution."""
+
+    run_many = getattr(model, "run_many", None)
+    if not callable(run_many):
+        return {
+            request.request_id: model.run(request) for request in requests
+        }
+    grouped: dict[tuple[str, str], list[SimulationRequest]] = {}
+    for request in requests:
+        key = (request.environment.environment_id, request.parameter_set_id)
+        grouped.setdefault(key, []).append(request)
+    results: dict[str, Any] = {}
+    ordered_groups = [grouped[key] for key in sorted(grouped)]
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for batch_results in executor.map(run_many, ordered_groups):
+            results.update(batch_results)
+    return results
+
+
+def _scan_progress_path(config: ExperimentConfig, model: ModelAdapter) -> Path:
+    return config.experiment_dir / "model_cache" / model.name / "scan_progress.jsonl"
+
+
+def _write_progress(path: Path, key: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"cache_key": key}) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def scan_stage(
     config: ExperimentConfig, adapter: ModelAdapter | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -207,23 +328,60 @@ def scan_stage(
 
     model = adapter if adapter is not None else resolve_model_adapter(config)
     requests = native_scan_requests(config, model)
+    progress_path = _scan_progress_path(config, model)
+    completed: set[str] = set()
+    if progress_path.is_file():
+        completed = {
+            json.loads(line)["cache_key"]
+            for line in progress_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+    adapter_cache = getattr(model, "cache_key", None)
+    keys = (
+        {request.request_id: adapter_cache(request) for request in requests}
+        if callable(adapter_cache)
+        else {}
+    )
+    if keys:
+        outstanding = [
+            request
+            for request in requests
+            if keys.get(request.request_id) not in completed
+        ]
+        start = time.perf_counter()
+        for index, request in enumerate(outstanding, start=1):
+            model.run(request)
+            _write_progress(progress_path, keys[request.request_id])
+            if index == 1 or index % 100 == 0 or index == len(outstanding):
+                elapsed = index / max(time.perf_counter() - start, 1e-9)
+                remaining = (len(outstanding) - index) / elapsed
+                print(
+                    f"scan progress: {index}/{len(outstanding)} "
+                    f"({index / len(outstanding):.1%}), remaining≈{remaining:.0f}s",
+                    flush=True,
+                )
+    results = run_simulation_requests(
+        tuple(requests),
+        model,
+        workers=config.simulation.workers,
+    )
+
     rows: list[dict[str, Any]] = []
     for request in requests:
-        result = model.run(request)
-        rows.append(
-            {
-                "environment_id": request.environment.environment_id,
-                "year": request.environment.year,
-                "management_unit_id": request.management.management_unit_id,
-                "parameter_set": request.parameter_set_id,
-                "planting_date": request.management.planting_date,
-                "request_id": result.request_id,
-                "status": result.status.value,
-                "failure_reason": result.failure_reason,
-                "cache_key": result.diagnostics.get("cache_key"),
-                **dict(result.summary),
-            }
-        )
+        result = results[request.request_id]
+        row = {
+            "environment_id": request.environment.environment_id,
+            "year": request.environment.year,
+            "management_unit_id": request.management.management_unit_id,
+            "parameter_set": request.parameter_set_id,
+            "request_id": result.request_id,
+            "status": result.status.value,
+            "failure_reason": result.failure_reason,
+            "cache_key": result.diagnostics.get("cache_key"),
+            **dict(result.summary),
+        }
+        row["planting_date"] = request.management.planting_date
+        rows.append(row)
     selected = (
         pd.DataFrame(rows)
         .sort_values(["environment_id", "parameter_set", "planting_date"])
@@ -270,10 +428,8 @@ def scan_stage(
                 .shape[0]
             ),
             "parameter_sets": sorted(config.simulation.parameter_sets),
-            "weather_source": (
-                "NASA POWER AG cached full-year and continuation forcing"
-            ),
-            "execution_mode": "native AquaCrop adapter",
+            "weather_source": "NASA POWER AG cached full-year and continuation forcing",
+            "execution_mode": f"native {model.name} adapter",
             "adapter_name": model.name,
             "adapter_version": model.version,
         },

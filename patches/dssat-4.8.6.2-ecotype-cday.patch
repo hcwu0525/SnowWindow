@@ -1,0 +1,35 @@
+diff --git a/Plant/CERES-Maize/MZ_PHENOL.for b/Plant/CERES-Maize/MZ_PHENOL.for
+index 30e9ebb1..46e9b077 100644
+--- a/Plant/CERES-Maize/MZ_PHENOL.for
++++ b/Plant/CERES-Maize/MZ_PHENOL.for
+@@ -43,6 +43,7 @@
+       CHARACTER*1     BLANK         
+       REAL            C1   
+       INTEGER         CDAY 
++      REAL            CDAY_VALUE
+       INTEGER         CropStatus
+       REAL            CUMDEP          
+       REAL            CUMDTT          
+@@ -288,10 +289,11 @@
+             IF (ISECT .EQ. 1 .AND. C255(1:1) .NE. ' ' .AND.
+      &            C255(1:1) .NE. '*') THEN
+               READ(C255,3100,IOSTAT=ERRNUM) ECOTYP,ECONAM,TBASE,TOPT,
+-     &             ROPT,P2O,DJTI,GDDE,DSGFT,RUE, KCAN, TSEN, CDAY,
++     &             ROPT,P2O,DJTI,GDDE,DSGFT,RUE, KCAN, TSEN, CDAY_VALUE,
+      &             FOZ1, SFOZ1, OBASE
+ 3100          FORMAT (A6,1X,A16,1X,14(1X,F5.0))
+               IF (ERRNUM .NE. 0) CALL ERROR(ERRKEY,ERRNUM,FILEE,LNUM)
++              CDAY = NINT(CDAY_VALUE)
+         
+ !  JG updated TSEN and CDAY format above 02/03/2023
+               IF (ECOTYP .EQ. ECONO) THEN
+@@ -309,7 +311,8 @@
+                 IF (C255(86:90) == '     ') THEN
+                   CDAY = 15
+                 ELSE
+-                  READ(C255(86:90),'(I5)',IOSTAT=ERRNUM) CDAY
++                  READ(C255(86:90),'(F5.0)',IOSTAT=ERRNUM) CDAY_VALUE
++                  IF (ERRNUM .EQ. 0) CDAY = NINT(CDAY_VALUE)
+                   IF (ERRNUM .NE. 0 .OR. CDAY < 0) CDAY = 15
+                 ENDIF
+         

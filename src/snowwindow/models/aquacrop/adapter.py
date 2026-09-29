@@ -60,9 +60,7 @@ class RequestValidationError(ValueError):
 def simulation_end_for_planting(planting_date: date) -> tuple[date, bool]:
     """Return the supported recurring-calendar end and adjustment flag."""
 
-    anniversary = (
-        pd.Timestamp(planting_date) + pd.DateOffset(years=1) - pd.Timedelta(days=1)
-    ).date()
+    anniversary = date(planting_date.year + 1, 4, 30)
     adjusted = anniversary.month == 2 and anniversary.day == 29
     if adjusted:
         anniversary -= timedelta(days=1)
@@ -305,8 +303,14 @@ class AquaCropAdapter:
             raise RequestValidationError(
                 "simulation must start on January 1 of the planting year"
             )
+        weather_end = max(record.date for record in request.environment.weather)
+        if request.end_date > weather_end:
+            raise RequestValidationError(
+                "every calendar day in the inclusive simulation interval "
+                "must have exactly one weather row"
+            )
         expected_end, _ = simulation_end_for_planting(request.management.planting_date)
-        if request.end_date != expected_end:
+        if request.end_date > expected_end:
             raise RequestValidationError(
                 "simulation end must be one day before the next sowing anniversary"
             )
@@ -350,8 +354,27 @@ class AquaCropAdapter:
                 raise RequestValidationError("weather values are physically invalid")
 
         irrigation = request.management.irrigation_assumption
-        if irrigation == "irrigated_confirmed" or parameters.get("irrigation_schedule"):
-            raise RequestValidationError("only rainfed management is supported")
+        if irrigation not in {
+            "rainfed_confirmed",
+            "irrigated_confirmed",
+            "unknown",
+        }:
+            raise RequestValidationError("unsupported irrigation assumption")
+        irrigation_smt = parameters.get("irrigation_smt", [70, 75, 80, 70])
+        if (
+            not isinstance(irrigation_smt, (list, tuple))
+            or len(irrigation_smt) != 4
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or not 0 <= float(value) <= 100
+                for value in irrigation_smt
+            )
+        ):
+            raise RequestValidationError(
+                "irrigation_smt must contain four percentages in [0, 100]"
+            )
 
         soil_depth = _number(parameters, "soil_depth_m", 2.0, minimum=0.2, maximum=5.0)
         compartment = _number(
@@ -392,10 +415,26 @@ class AquaCropAdapter:
         )
         _number(
             parameters,
+            "phenology_scale_site",
+            1.0,
+            minimum=0.0,
+            maximum=4.0,
+            minimum_inclusive=False,
+        )
+        _number(
+            parameters,
             "HI0",
             float(crop_params[crop]["HI0"]),
             minimum=0.0,
             maximum=1.0,
+            minimum_inclusive=False,
+        )
+        _number(
+            parameters,
+            "HI0_site",
+            1.0,
+            minimum=0.0,
+            maximum=4.0,
             minimum_inclusive=False,
         )
         _number(
@@ -467,7 +506,11 @@ class AquaCropAdapter:
             Crop("Wheat", "10/01"),
             InitialWaterContent(value=["FC"]),
         )
-        model.run_model(till_termination=True)
+        model.run_model(
+            till_termination=True,
+            initialize_model=True,
+            process_outputs=False,
+        )
         results = model.get_simulation_results()
         if len(results) != 1:
             raise RuntimeError("bundled AquaCrop smoke example returned no season")
@@ -552,7 +595,12 @@ class AquaCropAdapter:
                 )
                 if (
                     cached.status
-                    not in {RunStatus.EXECUTION_FAILED, RunStatus.INVALID_INPUT}
+                    not in {
+                        RunStatus.EXECUTION_FAILED,
+                        RunStatus.INVALID_INPUT,
+                        RunStatus.MODEL_LIMIT,
+                        RunStatus.INSUFFICIENT_THERMAL_TIME,
+                    }
                     and requested_artifacts_exist
                 ):
                     diagnostics = dict(cached.diagnostics)
@@ -680,6 +728,14 @@ class AquaCropAdapter:
         base = dict(crop_params[crop_name])
         phenology_scale = float(parameters.get("phenology_scale", 1.0))
         hi0 = float(parameters.get("HI0", base["HI0"]))
+        phenology_site_scale = float(parameters.get("phenology_scale_site", 1.0))
+        hi0_site = float(parameters.get("HI0_site", 1.0))
+        if not 0 < phenology_site_scale <= 4:
+            raise ValueError("phenology_scale_site must be in (0, 4]")
+        if not 0 < hi0_site <= 4:
+            raise ValueError("HI0_site must be in (0, 4]")
+        effective_phenology_scale = phenology_scale * phenology_site_scale
+        effective_hi0 = hi0 * hi0_site
         water_pct = float(parameters.get("initial_available_water_pct", 50.0))
         root_scale = float(parameters.get("root_depth_scale", 1.0))
         population = float(
@@ -694,6 +750,18 @@ class AquaCropAdapter:
         )
         soil_depth = float(parameters.get("soil_depth_m", 2.0))
         compartment = float(parameters.get("soil_compartment_m", 0.1))
+        irrigation_smt = [
+            float(value) for value in parameters.get("irrigation_smt", (70, 75, 80, 70))
+        ]
+        irrigation_management = (
+            IrrigationManagement(
+                irrigation_method=1,
+                SMT=irrigation_smt,
+                MaxIrr=50.0,
+            )
+            if request.management.irrigation_assumption == "irrigated_confirmed"
+            else IrrigationManagement(irrigation_method=0)
+        )
         moisture_fraction = float(
             parameters.get("grain_standard_moisture_fraction", 0.155)
         )
@@ -705,24 +773,28 @@ class AquaCropAdapter:
             + water_pct / 100 * (profile["th_fc"] - profile["th_wp"]).to_numpy()
         )
 
-        crop_kwargs = {key: float(base[key]) * phenology_scale for key in THERMAL_KEYS}
+        crop_kwargs = {
+            key: float(base[key]) * effective_phenology_scale for key in THERMAL_KEYS
+        }
         root_cap = soil_depth - 0.1
         effective_root_depth = min(float(base["Zmax"]) * root_scale, root_cap)
         crop_kwargs.update(
-            HI0=hi0,
+            HI0=effective_hi0,
             PlantPop=population,
             Zmax=effective_root_depth,
         )
         simulation_end, leap_adjusted = simulation_end_for_planting(
             request.management.planting_date
         )
-        harvest_rule = simulation_end.strftime("%m/%d")
+        harvest_rule = None
         crop = Crop(
             crop_name,
             request.management.planting_date.strftime("%m/%d"),
-            harvest_date=harvest_rule,
+            harvest_date=request.end_date.strftime("%m/%d"),
             **crop_kwargs,
         )
+        harvest_rule = request.end_date.strftime("%m/%d")
+        crop.harvest_date = harvest_rule
         crop.PlantTrigger = None
         effective_crop = dict(crop.__dict__)
 
@@ -755,7 +827,7 @@ class AquaCropAdapter:
                 depth_layer=[1],
                 value=[water_pct],
             ),
-            irrigation_management=IrrigationManagement(irrigation_method=0),
+            irrigation_management=irrigation_management,
             off_season=True,
         )
         model.run_model(till_termination=True)
@@ -857,9 +929,19 @@ class AquaCropAdapter:
             "parameter_set_id": request.parameter_set_id,
             "phenology_scale": phenology_scale,
             "HI0": hi0,
+            "phenology_scale_site": phenology_site_scale,
+            "HI0_site": hi0_site,
+            "effective_phenology_scale": effective_phenology_scale,
+            "effective_HI0": effective_hi0,
             "initial_available_water_pct": water_pct,
             "root_depth_scale": root_scale,
             "plant_population_ha": population,
+            "irrigation_method": (
+                "soil_moisture_target"
+                if request.management.irrigation_assumption == "irrigated_confirmed"
+                else "rainfed"
+            ),
+            "irrigation_smt": irrigation_smt,
             "simulation_start_date": request.start_date.isoformat(),
             "simulation_end_date": simulation_end.isoformat(),
             "configured_harvest_rule": harvest_rule,
