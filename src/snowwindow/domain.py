@@ -13,6 +13,61 @@ from types import MappingProxyType
 from typing import Any
 
 
+class WeatherStrategy(Enum):
+    """How an adapter expects experiment weather to be assembled."""
+
+    CACHED_POWER = "cached_power"
+    LEGACY_CROSSYEAR = "legacy_crossyear"
+
+
+class ScanRequestStrategy(Enum):
+    """How scan requests should be materialized for an adapter."""
+
+    PER_DATE = "per_date"
+    SLICE_WEATHER_HORIZON = "slice_weather_horizon"
+
+
+class FoldStrategy(Enum):
+    """Validation/calibration folds supported by an adapter."""
+
+    HELD_YEAR = "held_year"
+    LEAVE_SITE = "leave_site"
+
+
+@dataclass(frozen=True)
+class CalibrationParameter:
+    """A model parameter exposed to the shared coarse/fine calibration search."""
+
+    name: str
+    default: float
+    coarse_grid: tuple[float, float, float]
+    fine_step: float
+
+
+@dataclass(frozen=True)
+class ModelCapabilities:
+    """Declarative contract consumed by model-independent orchestration."""
+
+    display_name: str = "Unknown model"
+    phenology_parameter: CalibrationParameter = CalibrationParameter(
+        "phenology_scale", 1.0, (0.8, 1.2, 0.02), 0.005
+    )
+    yield_parameter: CalibrationParameter = CalibrationParameter(
+        "HI0", 0.48, (0.35, 0.55, 0.01), 0.0025
+    )
+    site_calibration_supported: bool = False
+    site_phenology_parameter: str = "phenology_scale_site"
+    site_yield_parameter: str = "HI0_site"
+    supported_folds: tuple[FoldStrategy, ...] = (FoldStrategy.HELD_YEAR,)
+    weather_strategy: WeatherStrategy = WeatherStrategy.CACHED_POWER
+    scan_request_strategy: ScanRequestStrategy = ScanRequestStrategy.PER_DATE
+    report_notes: tuple[str, ...] = ()
+
+    @property
+    def supports_site_calibration(self) -> bool:
+        return self.site_calibration_supported
+
+
 class RunStatus(str, Enum):
     MATURED = "matured"
     CROP_DIED = "crop_died"

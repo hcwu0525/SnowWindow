@@ -119,9 +119,7 @@ def test_build_document_sets_dates_sowing_and_cultivar_parameters(
     )
     assert "2022, 1, 2" in "\n".join(manager["CodeArray"])
     report = next(
-        child
-        for child in by_name["Field"]["Children"]
-        if child["Name"] == "Report"
+        child for child in by_name["Field"]["Children"] if child["Name"] == "Report"
     )
     assert report["EventNames"] == ["[Maize].Harvesting"]
     replacements = next(
@@ -130,9 +128,7 @@ def test_build_document_sets_dates_sowing_and_cultivar_parameters(
     assert replacements["$type"] == "Models.Core.Folder, Models"
     cultivar = replacements["Children"][0]
     dekalb = next(
-        child
-        for child in cultivar["Children"]
-        if child["Name"] == "CultivarFolder"
+        child for child in cultivar["Children"] if child["Name"] == "CultivarFolder"
     )["Children"]
     dekalb = next(child for child in dekalb if child["Name"] == "Dekalb_XL82")
     commands = "\n".join(dekalb["Command"])

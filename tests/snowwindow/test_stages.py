@@ -1,3 +1,4 @@
+from snowwindow.domain import ModelCapabilities
 from snowwindow.stages import simulate_stage, simulation_parameter_sets
 
 
@@ -18,14 +19,13 @@ def test_simulate_stage_delegates_to_baseline(
     assert seen == [(config, adapter)]
 
 
-def test_apsim_validation_omits_site_calibrated_parameter_set() -> None:
+def test_validation_omits_site_calibration_without_support() -> None:
+    capabilities = ModelCapabilities(site_calibration_supported=False)
+
     parameter_sets = simulation_parameter_sets(
-        "apsim",
-        {"juvenile_tt": 150.0, "grain_number_scale": 1.2},
-        {},
+        capabilities,
+        {"phenology_scale": 1.1, "HI0": 0.4},
+        {"A": {"phenology_scale_site": 1.2, "HI0_site": 0.5}},
     )
 
-    assert parameter_sets == {
-        "default": {},
-        "calibrated": {"juvenile_tt": 150.0, "grain_number_scale": 1.2},
-    }
+    assert list(parameter_sets) == ["default", "calibrated"]

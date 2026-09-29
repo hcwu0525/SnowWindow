@@ -20,6 +20,7 @@ from snowwindow.calibration import (
 )
 from snowwindow.config import ExperimentConfig
 from snowwindow.data import prepare_g2f
+from snowwindow.domain import FoldStrategy, ModelCapabilities
 from snowwindow.experiment import (
     build_observed_requests,
     load_prepared_tables,
@@ -100,7 +101,7 @@ def simulate_stage(
 
 
 def simulation_parameter_sets(
-    model_name: str,
+    capabilities: ModelCapabilities,
     calibrated_parameters: dict[str, float],
     site_overrides: dict[str, dict[str, float]],
 ) -> dict[str, dict[str, Any]]:
@@ -110,7 +111,7 @@ def simulation_parameter_sets(
         "default": {},
         "calibrated": calibrated_parameters,
     }
-    if model_name not in ("apsim", "dssat"):
+    if capabilities.supports_site_calibration:
         parameter_sets["site_calibrated"] = {
             **calibrated_parameters,
             "site_overrides": site_overrides,
@@ -175,60 +176,30 @@ def calibration_stage(
         calibration_years=config.selection.calibration_years,
         evaluation_years=config.selection.evaluation_years,
     )
-    if model.name in ("apsim", "dssat"):
-        folds = tuple(fold for fold in folds if fold["name"] == "held_year")
+    supported_folds = set(model.capabilities.supported_folds)
+    folds = tuple(
+        fold
+        for fold in folds
+        if (fold["name"] == "held_year" and FoldStrategy.HELD_YEAR in supported_folds)
+        or (
+            fold["name"].startswith("leave_site_")
+            and FoldStrategy.LEAVE_SITE in supported_folds
+        )
+    )
     parameter_rows = []
     search_frames = []
     held_year_parameters = None
-    options = config.selection.options
-    apsim = model.name == "apsim"
-    dssat = model.name == "dssat"
-    phenology_parameter_name = (
-        "P1" if dssat else ("juvenile_tt" if apsim else "phenology_scale")
-    )
-    yield_parameter_name = "G2" if dssat else ("grain_number_scale" if apsim else "HI0")
-    default_phenology = 259.0 if dssat else (211.0 if apsim else 1.0)
-    default_yield = 924.3 if dssat else (1.0 if apsim else 0.48)
-    phenology_coarse = tuple(
-        float(value)
-        for value in options.get(
-            "P1_grid"
-            if dssat
-            else ("juvenile_tt_grid" if apsim else "phenology_scale_grid"),
-            (150.0, 350.0, 50.0)
-            if dssat
-            else ((100.0, 350.0, 25.0) if apsim else (0.8, 1.2, 0.02)),
-        )
-    )
-    hi0_coarse = tuple(
-        float(value)
-        for value in options.get(
-            "G2_grid"
-            if dssat
-            else ("grain_number_scale_grid" if apsim else "harvest_index_grid"),
-            (700.0, 950.0, 50.0)
-            if dssat
-            else ((0.5, 1.5, 0.1) if apsim else (0.35, 0.55, 0.01)),
-        )
-    )
-    phenology_fine_step = float(
-        options.get(
-            "P1_fine_step"
-            if dssat
-            else ("juvenile_tt_fine_step" if apsim else "phenology_scale_fine_step"),
-            10.0 if dssat else (5.0 if apsim else 0.005),
-        )
-    )
-    yield_fine_step = float(
-        options.get(
-            "G2_fine_step"
-            if dssat
-            else (
-                "grain_number_scale_fine_step" if apsim else "harvest_index_fine_step"
-            ),
-            10.0 if dssat else (0.02 if apsim else 0.0025),
-        )
-    )
+    capabilities = model.capabilities
+    phenology = capabilities.phenology_parameter
+    yield_parameter = capabilities.yield_parameter
+    phenology_parameter_name = phenology.name
+    yield_parameter_name = yield_parameter.name
+    default_phenology = phenology.default
+    default_yield = yield_parameter.default
+    phenology_coarse = config.calibration.phenology_grid
+    hi0_coarse = config.calibration.yield_grid
+    phenology_fine_step = config.calibration.phenology_fine_step
+    yield_fine_step = config.calibration.yield_fine_step
     for fold in folds:
         if not fold["train_ids"]:
             continue
@@ -268,10 +239,12 @@ def calibration_stage(
         search_frames.append(search)
     parameters = pd.DataFrame(parameter_rows).sort_values("fold").reset_index(drop=True)
     site_offsets = pd.DataFrame()
-    if held_year_parameters is not None and not (apsim or dssat):
+    if held_year_parameters is not None and capabilities.supports_site_calibration:
         global_parameters = {
-            "phenology_scale": float(held_year_parameters["phenology_scale"]),
-            "HI0": float(held_year_parameters["HI0"]),
+            phenology_parameter_name: float(
+                held_year_parameters[phenology_parameter_name]
+            ),
+            yield_parameter_name: float(held_year_parameters[yield_parameter_name]),
         }
         training_split = {
             unit_id: "train"
@@ -348,6 +321,7 @@ def validation_stage(
     config: ExperimentConfig, adapter: ModelAdapter | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     model = _adapter(config, adapter)
+    capabilities = model.capabilities
     root = config.experiment_dir / "calibration"
     parameter_path = root / "parameters.parquet"
     observation_path = root / "fixed_observations.parquet"
@@ -362,8 +336,10 @@ def validation_stage(
     if not site_offsets.empty:
         site_overrides = {
             str(offset["site"]): {
-                "HI0_site": float(offset["HI0_site"]),
-                "phenology_scale_site": float(offset["phenology_scale_site"]),
+                capabilities.site_yield_parameter: float(offset["HI0_site"]),
+                capabilities.site_phenology_parameter: float(
+                    offset["phenology_scale_site"]
+                ),
             }
             for offset in site_offsets.to_dict("records")
         }
@@ -386,14 +362,8 @@ def validation_stage(
         split_by_unit = {
             unit_id: split_by_unit[unit_id] for unit_id in sorted(selected_ids)
         }
-        apsim = model.name == "apsim"
-        dssat = model.name == "dssat"
-        phenology_parameter_name = (
-            "P1" if dssat else ("juvenile_tt" if apsim else "phenology_scale")
-        )
-        yield_parameter_name = (
-            "G2" if dssat else ("grain_number_scale" if apsim else "HI0")
-        )
+        phenology_parameter_name = capabilities.phenology_parameter.name
+        yield_parameter_name = capabilities.yield_parameter.name
         calibrated_parameters = {
             phenology_parameter_name: float(row[phenology_parameter_name]),
             yield_parameter_name: float(row[yield_parameter_name]),
@@ -405,7 +375,7 @@ def validation_stage(
             fold_name=row["fold"],
             split_by_unit=split_by_unit,
             parameter_sets=simulation_parameter_sets(
-                model.name,
+                capabilities,
                 calibrated_parameters,
                 site_overrides,
             ),

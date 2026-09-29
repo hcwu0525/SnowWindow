@@ -1,6 +1,7 @@
 # DSSAT 原生 CERES-Maize：Linux 与 G2F 六环境
 
-核对日期：2026-09-27。返回[文档目录](README.md)。
+核对日期：2026-09-27。返回[文档目录](README.md)或
+[DSSAT 使用摘要](models/dssat.md)。
 
 本页描述 SnowWindow **已经运行的** DSSAT-CSM 4.8.6.2
 （`MZCER048`）参考情景。调用的是本地 `dscsm048` 可执行文件，

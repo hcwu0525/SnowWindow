@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from snowwindow.domain import ModelCapabilities
 from snowwindow.reporting import (
     observed_flowering_points,
     observed_yield_points,
@@ -76,13 +77,11 @@ def test_observed_flowering_points_include_pollen_observations() -> None:
         }
     )
 
-    points = observed_flowering_points(
-        pd.DataFrame(), predictions, baseline
-    )
+    points = observed_flowering_points(pd.DataFrame(), predictions, baseline)
 
-    assert points[
-        ["environment_id", "observed_value", "planting_date"]
-    ].to_dict("records") == [
+    assert points[["environment_id", "observed_value", "planting_date"]].to_dict(
+        "records"
+    ) == [
         {
             "environment_id": "A_2022",
             "observed_value": 62.5,
@@ -113,9 +112,7 @@ def test_observed_flowering_points_include_calendar_dates() -> None:
         }
     )
 
-    points = observed_flowering_points(
-        pd.DataFrame(), predictions, baseline
-    )
+    points = observed_flowering_points(pd.DataFrame(), predictions, baseline)
 
     assert points.loc[0, "observed_date"] == pd.Timestamp("2023-07-10")
 
@@ -195,19 +192,28 @@ def test_report_stage_overlays_observed_points(
     assert output.is_file()
     assert "# G2F AquaCrop" in output.read_text(encoding="utf-8")
 
-    apsim_config = type(
+    capabilities_config = type(
         "Config",
         (),
         {
             "experiment_dir": experiment,
-            "model": type("Model", (), {"name": "apsim"})(),
+            "model": type(
+                "Model",
+                (),
+                {
+                    "capabilities": ModelCapabilities(
+                        display_name="APSIM",
+                        report_notes=["Custom capability note."],
+                    )
+                },
+            )(),
         },
     )()
-    apsim_output = report_stage(apsim_config)  # type: ignore[arg-type]
+    apsim_output = report_stage(capabilities_config)  # type: ignore[arg-type]
 
     text = apsim_output.read_text(encoding="utf-8")
     assert "# G2F APSIM" in text
-    assert "`juvenile_tt` 与 `grain_number_scale`" in text
+    assert "Custom capability note." in text
 
 
 def test_report_stage_requires_dry_yield_for_observed_comparison(

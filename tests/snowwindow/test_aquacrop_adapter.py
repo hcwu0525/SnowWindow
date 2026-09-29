@@ -544,8 +544,6 @@ def test_preplant_water_path_is_shared_before_earliest_sowing(tmp_path) -> None:
     assert later_result.summary["preplant_soil_water_range_mm"] > 0
 
 
-
-
 @pytest.mark.integration
 def test_december_cross_year_sowing_can_mature(tmp_path) -> None:
     request = _request(

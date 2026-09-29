@@ -27,10 +27,12 @@ selection:
   evaluation_years: [2023]
   allow_assumed_rainfed: true
   exclude_default_soil_from_calibration: false
-  P1_grid: [150.0, 350.0, 50.0]
-  P1_fine_step: 10.0
-  G2_grid: [700.0, 950.0, 50.0]
-  G2_fine_step: 10.0
+
+calibration:
+  phenology_grid: [150.0, 350.0, 50.0]
+  phenology_fine_step: 10.0
+  yield_grid: [700.0, 950.0, 50.0]
+  yield_fine_step: 10.0
 
 simulation:
   scan_fractions: [0.90, 0.95]

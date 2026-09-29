@@ -40,6 +40,18 @@ simulation:
 """
 
 
+def _unified_calibration_yaml() -> str:
+    return _valid_yaml(
+        """
+calibration:
+  phenology_grid: [0.75, 1.25, 0.03]
+  phenology_fine_step: 0.006
+  yield_grid: [0.34, 0.56, 0.02]
+  yield_fine_step: 0.003
+"""
+    )
+
+
 def test_load_config_resolves_paths_and_experiment_directory(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path / "configs" / "demo.yaml", _valid_yaml())
 
@@ -57,6 +69,63 @@ def test_load_config_resolves_paths_and_experiment_directory(tmp_path: Path) -> 
     assert config.selection.exclude_default_soil_from_calibration is True
     assert config.simulation.scan_fractions == (0.25, 1.0)
     assert config.simulation.workers == 2
+
+
+def test_load_config_reads_unified_calibration_settings(tmp_path: Path) -> None:
+    config = load_config(
+        _write_config(
+            tmp_path / "configs" / "unified.yaml", _unified_calibration_yaml()
+        )
+    )
+
+    assert config.calibration.phenology_grid == (0.75, 1.25, 0.03)
+    assert config.calibration.phenology_fine_step == 0.006
+    assert config.calibration.yield_grid == (0.34, 0.56, 0.02)
+    assert config.calibration.yield_fine_step == 0.003
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    ["aquacrop", "apsim", "dssat"],
+)
+def test_load_config_translates_legacy_model_specific_grid_keys(
+    tmp_path: Path,
+    model_name: str,
+) -> None:
+    legacy_keys = {
+        "aquacrop": ("phenology_scale", "harvest_index"),
+        "apsim": ("juvenile_tt", "grain_number_scale"),
+        "dssat": ("P1", "G2"),
+    }
+    phenology_key, yield_key = legacy_keys[model_name]
+    yaml_text = _valid_yaml(
+        f"""
+selection:
+  environments: [A_2022]
+  calibration_years: [2022]
+  evaluation_years: [2023]
+  {phenology_key}_grid: [1, 2, 0.1]
+  {phenology_key}_fine_step: 0.2
+  {yield_key}_grid: [3, 4, 0.2]
+  {yield_key}_fine_step: 0.1
+"""
+    ).replace("name: aquacrop", f"name: {model_name}")
+    config = load_config(_write_config(tmp_path / "configs" / "legacy.yaml", yaml_text))
+
+    assert config.calibration.phenology_grid == (1.0, 2.0, 0.1)
+    assert config.calibration.phenology_fine_step == 0.2
+    assert config.calibration.yield_grid == (3.0, 4.0, 0.2)
+    assert config.calibration.yield_fine_step == 0.1
+
+
+def test_unified_calibration_overrides_legacy_keys(tmp_path: Path) -> None:
+    yaml_text = _unified_calibration_yaml().replace(
+        "  phenology_fine_step: 0.006",
+        "  phenology_fine_step: 0.006\n  phenology_scale_grid: [9, 10, 1]",
+    )
+    config = load_config(_write_config(tmp_path / "configs" / "mixed.yaml", yaml_text))
+
+    assert config.calibration.phenology_grid == (0.75, 1.25, 0.03)
 
 
 @pytest.mark.parametrize(
@@ -222,7 +291,5 @@ def test_project_targets_python_310() -> None:
     assert project["project"]["requires-python"] == ">=3.10,<3.13"
     assert project["tool"]["ruff"]["target-version"] == "py310"
 
-    lock = (project_root / "requirements-aquacrop.lock.txt").read_text(
-        encoding="utf-8"
-    )
+    lock = (project_root / "requirements-aquacrop.lock.txt").read_text(encoding="utf-8")
     assert "# Python 3.10+" in lock

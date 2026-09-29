@@ -8,6 +8,14 @@ from pathlib import Path
 import pandas as pd
 
 from snowwindow.config import ExperimentConfig
+from snowwindow.domain import ModelCapabilities
+
+DEFAULT_REPORT_NOTES = (
+    "- 开花日期采用 AquaCrop `HIstart` 首次跨越的日末代理，并非独立花粉事件。",
+    "- 默认土壤仅用于探索；缺失灌溉信息按配置标记为假定雨养。",
+    "- 全局校准仅拟合 `phenology_scale` 与 `HI0`；根深、灌溉和土壤水力参数固定。",
+    "- `site_calibrated` 在全局参数基础上应用满足训练年数要求的站点偏移。",
+)
 
 
 def _markdown_table(frame: pd.DataFrame) -> str:
@@ -106,10 +114,12 @@ def simulated_flowering_dates(frame: pd.DataFrame) -> pd.Series:
 
 
 def report_stage(config: ExperimentConfig) -> Path:
-    model_name = str(getattr(getattr(config, "model", None), "name", "aquacrop"))
-    is_apsim = model_name == "apsim"
-    is_dssat = model_name == "dssat"
-    model_label = "DSSAT" if is_dssat else ("APSIM" if is_apsim else "AquaCrop")
+    capabilities = getattr(
+        getattr(config, "model", None),
+        "capabilities",
+        ModelCapabilities(display_name="AquaCrop", report_notes=DEFAULT_REPORT_NOTES),
+    )
+    model_label = capabilities.display_name
     scan_root = config.experiment_dir / "scan"
     summary_path = scan_root / "summary.parquet"
     windows_path = scan_root / "windows.json"
@@ -263,30 +273,7 @@ def report_stage(config: ExperimentConfig) -> Path:
         if not metrics.empty
         else metrics
     )
-    model_notes = (
-        [
-            "- 开花日期采用 DSSAT CERES-Maize 输出的 ADAT 开花日，"
-            "与 G2F 花粉日期作代理比较。",
-            "- 土壤 IB00000007、IB0035 品种、120 kg N/ha 播期施用和雨养"
-            "均为固定参考情景，并非实测管理。",
-            "- 全局校准仅拟合 P1 与 G2（2022）；2023 保留用于留年评估。",
-        ]
-        if is_dssat
-        else [
-            "- 开花日期采用 APSIM Maize 的 `Flowering` 事件，"
-            "与 G2F 花粉日期作代理比较。",
-            "- 土壤、水氮、施肥和 Dekalb_XL82 品种均为固定探索情景。",
-            "- 全局校准仅拟合 `juvenile_tt` 与 `grain_number_scale`。",
-        ]
-        if is_apsim
-        else [
-            "- 开花日期采用 AquaCrop `HIstart` 首次跨越的日末代理，并非独立花粉事件。",
-            "- 默认土壤仅用于探索；缺失灌溉信息按配置标记为假定雨养。",
-            "- 全局校准仅拟合 `phenology_scale` 与 `HI0`；"
-            "根深、灌溉和土壤水力参数固定。",
-            "- `site_calibrated` 在全局参数基础上应用满足训练年数要求的站点偏移。",
-        ]
-    )
+    model_notes = list(capabilities.report_notes)
     report = [
         f"# G2F {model_label} 全年播期扫描报告",
         "",

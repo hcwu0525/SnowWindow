@@ -12,6 +12,7 @@ from snowwindow.config import ConfigError, load_config
 
 COMMANDS = (
     "audit",
+    "catalog",
     "prepare",
     "baseline",
     "calibrate",
@@ -71,6 +72,16 @@ def _run_stage(command: str, config) -> object:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "catalog":
+        from snowwindow.catalog import build_catalog
+
+        try:
+            _, _, catalog_path = build_catalog(Path.cwd() / "outputs")
+        except Exception as exc:
+            print(f"catalog failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"catalog: {catalog_path}")
+        return 0
     try:
         config = load_config(args.config)
     except ConfigError as exc:

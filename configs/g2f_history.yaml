@@ -17,10 +17,12 @@ selection:
   evaluation_years: [2023]
   allow_assumed_rainfed: true
   exclude_default_soil_from_calibration: true
-  phenology_scale_grid: [0.8, 1.2, 0.02]
-  phenology_scale_fine_step: 0.005
-  harvest_index_grid: [0.35, 0.55, 0.01]
-  harvest_index_fine_step: 0.0025
+
+calibration:
+  phenology_grid: [0.8, 1.2, 0.02]
+  phenology_fine_step: 0.005
+  yield_grid: [0.35, 0.55, 0.01]
+  yield_fine_step: 0.0025
 
 simulation:
   scan_fractions: [0.90, 0.95]

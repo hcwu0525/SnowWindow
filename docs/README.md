@@ -8,9 +8,15 @@
 
 | 文档 | 内容 | 何时更新 |
 | --- | --- | --- |
+| [快速上手](getting-started.md) | 环境、数据、AquaCrop 示例和可选引擎 | 安装流程或数据布局变化时 |
+| [配置指南](configuration.md) | 配置 schema、统一校准键与兼容策略 | 修改配置结构时 |
+| [实验结果索引](experiments.md) | 目录规范、catalog、状态定义与复现入口 | 实验产物变化时 |
 | [G2F 数据与模型输入映射](g2f-data.md) | 文件清单、字段、覆盖范围、当前用途、缺口 | 增加数据、修改清洗或单位转换时 |
 | [AquaCrop、APSIM 与 DSSAT 的比较](model-comparison.md) | 三种模型的机制、输入输出、适用范围与项目实现限制 | 核对新版本、增加模型或研究问题时 |
+| [AquaCrop 指南](models/aquacrop.md) | 安装、输入映射、校准参数、输出与限制 | AquaCrop 适配范围变化时 |
+| [APSIM 指南](models/apsim.md) | 安装、输入映射、校准参数、输出与限制 | APSIM 版本或适配范围变化时 |
 | [DSSAT 原生仿真指南](dssat.md) | Linux 运行时、G2F 输入映射、固定参考情景、复现与产物 | DSSAT 安装、配置或实验条件变化时 |
+| [DSSAT 使用指南](models/dssat.md) | 面向使用者的模型边界摘要 | DSSAT 使用方式变化时 |
 | [模型分析与使用日志](model-usage-log.md) | 已有实验、安装验证、分析结论、待核实问题及记录模板 | 每次实验或重要分析后 |
 
 ## 如何理解记录中的状态

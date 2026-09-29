@@ -11,7 +11,16 @@ from datetime import date
 from functools import cached_property
 from pathlib import Path
 
-from snowwindow.domain import RunStatus, SimulationRequest, SimulationResult
+from snowwindow.domain import (
+    CalibrationParameter,
+    FoldStrategy,
+    ModelCapabilities,
+    RunStatus,
+    ScanRequestStrategy,
+    SimulationRequest,
+    SimulationResult,
+    WeatherStrategy,
+)
 
 VERSION = "4.8.6.2"
 SOIL_ID = "IB00000007"  # DSSAT reference deep sandy loam, not a G2F measurement.
@@ -232,6 +241,25 @@ def render_cultivar(template: str, p1: float, g2: float) -> str:
 class DSSATAdapter:
     name = "dssat"
     version = VERSION
+    capabilities = ModelCapabilities(
+        display_name="DSSAT",
+        phenology_parameter=CalibrationParameter(
+            "P1", P1_DEFAULT, (150.0, 350.0, 50.0), 10.0
+        ),
+        yield_parameter=CalibrationParameter(
+            "G2", G2_DEFAULT, (700.0, 950.0, 50.0), 10.0
+        ),
+        supported_folds=(FoldStrategy.HELD_YEAR,),
+        weather_strategy=WeatherStrategy.LEGACY_CROSSYEAR,
+        scan_request_strategy=ScanRequestStrategy.SLICE_WEATHER_HORIZON,
+        report_notes=(
+            "- 开花日期采用 DSSAT CERES-Maize 输出的 ADAT 开花日，"
+            "与 G2F 花粉日期作代理比较。",
+            "- 土壤 IB00000007、IB0035 品种、120 kg N/ha 播期施用和雨养"
+            "均为固定参考情景，并非实测管理。",
+            "- 全局校准仅拟合 P1 与 G2（2022）；2023 保留用于留年评估。",
+        ),
+    )
 
     def __init__(self, installation: Path | None = None) -> None:
         self.installation = (

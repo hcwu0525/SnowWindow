@@ -45,7 +45,7 @@ def test_select_parameter_rejects_incomplete_candidates_and_breaks_ties() -> Non
             ("a", 0.9, "matured", 9.0, 10.0),
             ("b", 0.9, "matured", 19.0, 20.0),
             ("a", 1.0, "matured", 11.0, 10.0),
-        ("b", 1.0, "matured", 19.0, 20.0),
+            ("b", 1.0, "matured", 19.0, 20.0),
             ("a", 1.1, "matured", 11.0, 10.0),
             ("b", 1.1, "matured", 21.0, 20.0),
         ],
@@ -549,9 +549,7 @@ def test_validation_applies_site_overrides_by_site() -> None:
             for variable, value in zip(("pollen_dap", "dry_yield_mg_ha"), values)
         ]
     )
-    requests = {
-        unit: _request(unit, 2022) for unit in ("a", "b")
-    }
+    requests = {unit: _request(unit, 2022) for unit in ("a", "b")}
     requests["b"] = replace(
         requests["b"],
         environment=replace(requests["b"].environment, environment_id="B_2022"),

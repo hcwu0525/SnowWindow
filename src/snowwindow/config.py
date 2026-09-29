@@ -11,6 +11,14 @@ from typing import Any
 import yaml
 
 
+@dataclass(frozen=True)
+class CalibrationConfig:
+    phenology_grid: tuple[float, float, float]
+    phenology_fine_step: float
+    yield_grid: tuple[float, float, float]
+    yield_fine_step: float
+
+
 class ConfigError(ValueError):
     """Raised when an experiment configuration is invalid."""
 
@@ -63,6 +71,7 @@ class ExperimentConfig:
     model: ModelConfig
     selection: SelectionConfig
     simulation: SimulationConfig
+    calibration: CalibrationConfig
     source_path: Path
 
     @property
@@ -103,6 +112,103 @@ def _years(value: Any, name: str) -> tuple[int, ...]:
             raise ConfigError(f"{name} must contain integer years")
         years.append(year)
     return tuple(years)
+
+
+def _grid(value: Any, name: str) -> tuple[float, float, float]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or len(value) != 3
+    ):
+        raise ConfigError(f"{name} must be a three-number [start, stop, step] grid")
+    numbers = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            raise ConfigError(f"{name} must contain numbers")
+        numbers.append(float(item))
+    start, stop, step = numbers
+    if not step > 0 or stop <= start:
+        raise ConfigError(f"{name} must have stop > start and positive step")
+    return start, stop, step
+
+
+def _fine_step(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{name} must be a positive number")
+    number = float(value)
+    if not number > 0:
+        raise ConfigError(f"{name} must be a positive number")
+    return number
+
+
+def _calibration_config(
+    root: Mapping[str, Any], selection: SelectionConfig, model_name: str
+) -> CalibrationConfig:
+    unified = _require_mapping(root.get("calibration", {}), "calibration")
+    options = dict(selection.options)
+    legacy_keys = {
+        "aquacrop": ("phenology_scale", "harvest_index"),
+        "apsim": ("juvenile_tt", "grain_number_scale"),
+        "dssat": ("P1", "G2"),
+    }
+    legacy_phenology, legacy_yield = legacy_keys.get(model_name, ("", ""))
+
+    def first(*keys: str, default: Any) -> Any:
+        for key in keys:
+            if key in unified:
+                return unified[key]
+        for key in keys:
+            if key in options:
+                return options[key]
+        return default
+
+    phenology_default = (0.8, 1.2, 0.02)
+    yield_default = (0.35, 0.55, 0.01)
+    if model_name == "apsim":
+        phenology_default = (100.0, 350.0, 25.0)
+        yield_default = (0.5, 1.5, 0.1)
+    elif model_name == "dssat":
+        phenology_default = (150.0, 350.0, 50.0)
+        yield_default = (700.0, 950.0, 50.0)
+    phenology_fine_default = 0.005
+    yield_fine_default = 0.0025
+    if model_name == "apsim":
+        phenology_fine_default = 5.0
+        yield_fine_default = 0.02
+    elif model_name == "dssat":
+        phenology_fine_default = 10.0
+        yield_fine_default = 10.0
+
+    return CalibrationConfig(
+        phenology_grid=_grid(
+            first(
+                "phenology_grid",
+                f"{legacy_phenology}_grid",
+                default=phenology_default,
+            ),
+            "calibration.phenology_grid",
+        ),
+        phenology_fine_step=_fine_step(
+            first(
+                "phenology_fine_step",
+                f"{legacy_phenology}_fine_step",
+                default=phenology_fine_default,
+            ),
+            "calibration.phenology_fine_step",
+        ),
+        yield_grid=_grid(
+            first("yield_grid", f"{legacy_yield}_grid", default=yield_default),
+            "calibration.yield_grid",
+        ),
+        yield_fine_step=_fine_step(
+            first(
+                "yield_fine_step",
+                f"{legacy_yield}_fine_step",
+                default=yield_fine_default,
+            ),
+            "calibration.yield_fine_step",
+        ),
+    )
 
 
 def _fractions(value: Any) -> tuple[float, ...]:
@@ -244,6 +350,7 @@ def load_config(path: Path) -> ExperimentConfig:
             ("scan_fractions", "workers", "scan_all_dates", "parameter_sets"),
         ),
     )
+    calibration = _calibration_config(root, selection, model_name)
 
     return ExperimentConfig(
         experiment_id=experiment_id,
@@ -252,5 +359,6 @@ def load_config(path: Path) -> ExperimentConfig:
         model=model,
         selection=selection,
         simulation=simulation,
+        calibration=calibration,
         source_path=source_path,
     )

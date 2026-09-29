@@ -27,7 +27,16 @@ from aquacrop import (
 from aquacrop.entities.crops.crop_params import crop_params
 from aquacrop.utils import get_filepath, prepare_weather
 
-from snowwindow.domain import RunStatus, SimulationRequest, SimulationResult
+from snowwindow.domain import (
+    CalibrationParameter,
+    FoldStrategy,
+    ModelCapabilities,
+    RunStatus,
+    ScanRequestStrategy,
+    SimulationRequest,
+    SimulationResult,
+    WeatherStrategy,
+)
 from snowwindow.models.aquacrop.physics import reference_et
 
 ADAPTER_NAME = "aquacrop"
@@ -238,6 +247,26 @@ class AquaCropAdapter:
 
     name = ADAPTER_NAME
     version = MODEL_VERSION
+    capabilities = ModelCapabilities(
+        display_name="AquaCrop",
+        phenology_parameter=CalibrationParameter(
+            "phenology_scale", 1.0, (0.8, 1.2, 0.02), 0.005
+        ),
+        yield_parameter=CalibrationParameter("HI0", 0.48, (0.35, 0.55, 0.01), 0.0025),
+        site_calibration_supported=True,
+        site_phenology_parameter="phenology_scale_site",
+        site_yield_parameter="HI0_site",
+        supported_folds=(FoldStrategy.HELD_YEAR, FoldStrategy.LEAVE_SITE),
+        weather_strategy=WeatherStrategy.CACHED_POWER,
+        scan_request_strategy=ScanRequestStrategy.PER_DATE,
+        report_notes=(
+            "- 开花日期采用 AquaCrop `HIstart` 首次跨越的日末代理，并非独立花粉事件。",
+            "- 默认土壤仅用于探索；缺失灌溉信息按配置标记为假定雨养。",
+            "- 全局校准仅拟合 `phenology_scale` 与 `HI0`；"
+            "根深、灌溉和土壤水力参数固定。",
+            "- `site_calibrated` 在全局参数基础上应用满足训练年数要求的站点偏移。",
+        ),
+    )
 
     @property
     def source_fingerprints(self) -> dict[str, str]:

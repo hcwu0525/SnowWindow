@@ -434,9 +434,7 @@ def run_coarse_fine_calibration(
     combined["invalid_count"] = combined["expected_count"] - combined["valid_count"]
     combined["selected"] = (
         combined["phase"].eq("phenology")
-        & combined["parameter_value"].eq(
-            fine.parameters[phenology_parameter_name]
-        )
+        & combined["parameter_value"].eq(fine.parameters[phenology_parameter_name])
     ) | (
         combined["phase"].eq("yield")
         & combined["parameter_value"].eq(fine.parameters[yield_parameter_name])

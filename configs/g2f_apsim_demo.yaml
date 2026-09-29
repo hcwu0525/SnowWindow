@@ -23,10 +23,12 @@ selection:
   evaluation_years: [2023]
   allow_assumed_rainfed: true
   exclude_default_soil_from_calibration: false
-  juvenile_tt_grid: [100.0, 350.0, 25.0]
-  juvenile_tt_fine_step: 5.0
-  grain_number_scale_grid: [0.5, 1.5, 0.1]
-  grain_number_scale_fine_step: 0.02
+
+calibration:
+  phenology_grid: [100.0, 350.0, 25.0]
+  phenology_fine_step: 5.0
+  yield_grid: [0.5, 1.5, 0.1]
+  yield_fine_step: 0.02
 
 simulation:
   scan_fractions: [0.90, 0.95]

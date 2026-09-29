@@ -10,6 +10,7 @@ import pyarrow
 import pytest
 
 from snowwindow.config import (
+    CalibrationConfig,
     ExperimentConfig,
     ModelConfig,
     SelectionConfig,
@@ -85,6 +86,12 @@ def _config(
             workers=1,
             scan_all_dates=True,
             options=simulation_options or {"scan_horizon": "cross_year"},
+        ),
+        calibration=CalibrationConfig(
+            phenology_grid=(0.8, 1.2, 0.02),
+            phenology_fine_step=0.005,
+            yield_grid=(0.35, 0.55, 0.01),
+            yield_fine_step=0.0025,
         ),
         source_path=output_dir / "fixture.yaml",
     )

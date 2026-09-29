@@ -19,7 +19,7 @@ import pandas as pd
 
 from snowwindow.adapters import ModelAdapter, resolve_model_adapter
 from snowwindow.config import ExperimentConfig
-from snowwindow.domain import SimulationRequest
+from snowwindow.domain import ScanRequestStrategy, SimulationRequest, WeatherStrategy
 from snowwindow.experiment import (
     build_simulation_request,
     load_cached_power_weather,
@@ -128,8 +128,8 @@ def native_scan_requests(
 ) -> tuple[SimulationRequest, ...]:
     """Build deterministic requests for every environment/parameter/date."""
 
-    if adapter is None:
-        resolve_model_adapter(config)
+    model = adapter if adapter is not None else resolve_model_adapter(config)
+    capabilities = model.capabilities
     tables = load_prepared_tables(config)
     units = select_representative_units(
         tables["management_units"], config.selection.environments
@@ -144,23 +144,14 @@ def native_scan_requests(
     held_year = parameters.loc[parameters["fold"].eq("held_year")]
     if held_year.empty:
         raise ValueError("held_year calibration parameters are missing")
-    if config.model.name == "dssat":
-        calibrated_parameters = {
-            "P1": float(held_year.iloc[0]["P1"]),
-            "G2": float(held_year.iloc[0]["G2"]),
-        }
-    elif config.model.name == "apsim":
-        calibrated_parameters = {
-            "juvenile_tt": float(held_year.iloc[0]["juvenile_tt"]),
-            "grain_number_scale": float(
-                held_year.iloc[0]["grain_number_scale"]
-            ),
-        }
-    else:
-        calibrated_parameters = {
-            "phenology_scale": float(held_year.iloc[0]["phenology_scale"]),
-            "HI0": float(held_year.iloc[0]["HI0"]),
-        }
+    calibrated_parameters = {
+        capabilities.phenology_parameter.name: float(
+            held_year.iloc[0][capabilities.phenology_parameter.name]
+        ),
+        capabilities.yield_parameter.name: float(
+            held_year.iloc[0][capabilities.yield_parameter.name]
+        ),
+    }
     site_offsets = pd.DataFrame()
     site_offset_path = config.experiment_dir / "calibration/site_offsets.parquet"
     if site_offset_path.is_file():
@@ -169,8 +160,10 @@ def native_scan_requests(
     if not site_offsets.empty:
         site_offset_map = {
             str(offset["site"]): {
-                "HI0_site": float(offset["HI0_site"]),
-                "phenology_scale_site": float(offset["phenology_scale_site"]),
+                capabilities.site_yield_parameter: float(offset["HI0_site"]),
+                capabilities.site_phenology_parameter: float(
+                    offset["phenology_scale_site"]
+                ),
             }
             for offset in site_offsets.to_dict("records")
         }
@@ -180,7 +173,7 @@ def native_scan_requests(
         environment_id = str(unit["environment_id"])
         loader = (
             load_legacy_crossyear_weather
-            if config.model.name in ("apsim", "dssat")
+            if capabilities.weather_strategy is WeatherStrategy.LEGACY_CROSSYEAR
             else load_cached_power_weather
         )
         weather, _ = loader(config, environment_id)
@@ -217,7 +210,9 @@ def native_scan_requests(
                 }
             year = int(environment["year"])
             planting_dates = calendar_dates(year)
-            if config.model.name == "dssat":
+            if capabilities.scan_request_strategy is (
+                ScanRequestStrategy.SLICE_WEATHER_HORIZON
+            ):
                 # All dates share the same normalized weather records. Construct
                 # them once, then slice the immutable tuple for each horizon.
                 base = build_simulation_request(
@@ -267,14 +262,12 @@ def native_scan_requests(
                         output_dir=config.experiment_dir / "model_cache",
                     )
                 )
-    expected = (
-        sum(
-            len(units.loc[units["environment_id"].eq(environment_id)])
-            * len(config.simulation.parameter_sets)
-            * len(calendar_dates(int(environment["year"])))
-            for environment_id, environment in environments.iterrows()
-            if environment_id in set(units["environment_id"])
-        )
+    expected = sum(
+        len(units.loc[units["environment_id"].eq(environment_id)])
+        * len(config.simulation.parameter_sets)
+        * len(calendar_dates(int(environment["year"])))
+        for environment_id, environment in environments.iterrows()
+        if environment_id in set(units["environment_id"])
     )
     if len(requests) != expected:
         raise ValueError(
@@ -294,9 +287,7 @@ def run_simulation_requests(
 
     run_many = getattr(model, "run_many", None)
     if not callable(run_many):
-        return {
-            request.request_id: model.run(request) for request in requests
-        }
+        return {request.request_id: model.run(request) for request in requests}
     grouped: dict[tuple[str, str], list[SimulationRequest]] = {}
     for request in requests:
         key = (request.environment.environment_id, request.parameter_set_id)
@@ -394,8 +385,7 @@ def scan_stage(
         )
     if selected.duplicated(["environment_id", "parameter_set", "planting_date"]).any():
         raise ValueError(
-            "native scan requests contain duplicate "
-            "environment/parameter/date keys"
+            "native scan requests contain duplicate environment/parameter/date keys"
         )
 
     window_rows = []

@@ -9,10 +9,13 @@ from snowwindow.adapters import (
 )
 from snowwindow.domain import (
     Environment,
+    FoldStrategy,
     ManagementUnit,
     RunStatus,
+    ScanRequestStrategy,
     SimulationRequest,
     SimulationResult,
+    WeatherStrategy,
 )
 
 
@@ -95,4 +98,69 @@ def test_resolve_model_adapter_reports_unknown_configured_model() -> None:
 
 
 def test_default_registry_includes_all_crop_models() -> None:
-    assert default_adapter_registry().names() == ("apsim", "aquacrop", "dssat")
+    registry = default_adapter_registry()
+
+    assert registry.names() == ("apsim", "aquacrop", "dssat")
+
+
+def test_builtin_model_capabilities_declare_calibration_contracts() -> None:
+    registry = default_adapter_registry()
+    aquacrop = registry.get("aquacrop").capabilities
+    apsim = registry.get("apsim").capabilities
+    dssat = registry.get("dssat").capabilities
+
+    assert aquacrop.phenology_parameter.name == "phenology_scale"
+    assert aquacrop.yield_parameter.name == "HI0"
+    assert aquacrop.phenology_parameter.default == 1.0
+    assert aquacrop.yield_parameter.default == 0.48
+    assert aquacrop.phenology_parameter.coarse_grid == (0.8, 1.2, 0.02)
+    assert aquacrop.yield_parameter.coarse_grid == (0.35, 0.55, 0.01)
+    assert aquacrop.phenology_parameter.fine_step == 0.005
+    assert aquacrop.yield_parameter.fine_step == 0.0025
+    assert aquacrop.supports_site_calibration is True
+    assert aquacrop.site_phenology_parameter == "phenology_scale_site"
+    assert aquacrop.site_yield_parameter == "HI0_site"
+    assert aquacrop.supported_folds == (
+        FoldStrategy.HELD_YEAR,
+        FoldStrategy.LEAVE_SITE,
+    )
+    assert aquacrop.weather_strategy is WeatherStrategy.CACHED_POWER
+    assert aquacrop.scan_request_strategy is ScanRequestStrategy.PER_DATE
+
+    assert apsim.phenology_parameter.name == "juvenile_tt"
+    assert apsim.yield_parameter.name == "grain_number_scale"
+    assert apsim.phenology_parameter.default == 211.0
+    assert apsim.yield_parameter.default == 1.0
+    assert apsim.phenology_parameter.coarse_grid == (100.0, 350.0, 25.0)
+    assert apsim.yield_parameter.coarse_grid == (0.5, 1.5, 0.1)
+    assert apsim.phenology_parameter.fine_step == 5.0
+    assert apsim.yield_parameter.fine_step == 0.02
+    assert apsim.supports_site_calibration is False
+    assert apsim.supported_folds == (FoldStrategy.HELD_YEAR,)
+    assert apsim.weather_strategy is WeatherStrategy.LEGACY_CROSSYEAR
+    assert apsim.scan_request_strategy is ScanRequestStrategy.PER_DATE
+
+    assert dssat.phenology_parameter.name == "P1"
+    assert dssat.yield_parameter.name == "G2"
+    assert dssat.phenology_parameter.default == 259.0
+    assert dssat.yield_parameter.default == 924.3
+    assert dssat.phenology_parameter.coarse_grid == (150.0, 350.0, 50.0)
+    assert dssat.yield_parameter.coarse_grid == (700.0, 950.0, 50.0)
+    assert dssat.phenology_parameter.fine_step == 10.0
+    assert dssat.yield_parameter.fine_step == 10.0
+    assert dssat.supports_site_calibration is False
+    assert dssat.supported_folds == (FoldStrategy.HELD_YEAR,)
+    assert dssat.weather_strategy is WeatherStrategy.LEGACY_CROSSYEAR
+    assert dssat.scan_request_strategy is ScanRequestStrategy.SLICE_WEATHER_HORIZON
+
+
+def test_model_capabilities_declare_display_and_report_notes() -> None:
+    registry = default_adapter_registry()
+
+    assert registry.get("aquacrop").capabilities.display_name == "AquaCrop"
+    assert registry.get("apsim").capabilities.display_name == "APSIM"
+    assert registry.get("dssat").capabilities.display_name == "DSSAT"
+    for adapter in registry.names():
+        capabilities = registry.get(adapter).capabilities
+        assert capabilities.report_notes
+        assert all(note.strip() for note in capabilities.report_notes)

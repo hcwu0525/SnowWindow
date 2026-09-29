@@ -17,7 +17,16 @@ from typing import Any
 
 import pandas as pd
 
-from snowwindow.domain import RunStatus, SimulationRequest, SimulationResult
+from snowwindow.domain import (
+    CalibrationParameter,
+    FoldStrategy,
+    ModelCapabilities,
+    RunStatus,
+    ScanRequestStrategy,
+    SimulationRequest,
+    SimulationResult,
+    WeatherStrategy,
+)
 
 ADAPTER_NAME = "apsim"
 MODEL_VERSION = "2026.9.8116.0"
@@ -202,9 +211,7 @@ def build_apsim_document(
         for request in ordered_requests
     }
     if len(parameter_pairs) != 1:
-        raise APSIMValidationError(
-            "one APSIM batch must share cultivar parameters"
-        )
+        raise APSIMValidationError("one APSIM batch must share cultivar parameters")
     juvenile_tt, grain_scale = next(iter(parameter_pairs))
     maize_replacement = copy.deepcopy(_expanded_maize(str(template_path)))
     cultivar_folder = _find_model(maize_replacement, "CultivarFolder")
@@ -311,9 +318,7 @@ def parse_report(
         flowering = next(
             (
                 value
-                for value in (
-                    _positive_number(item) for item in group["FloweringDAS"]
-                )
+                for value in (_positive_number(item) for item in group["FloweringDAS"])
                 if value is not None
             ),
             None,
@@ -355,9 +360,7 @@ def parse_report(
                     else None
                 ),
                 "biomass_mg_ha": (
-                    biomass_kg_ha / 1000.0
-                    if biomass_kg_ha is not None
-                    else None
+                    biomass_kg_ha / 1000.0 if biomass_kg_ha is not None else None
                 ),
                 "juvenile_tt": float(
                     request.model_parameters.get("juvenile_tt", 211.0)
@@ -390,6 +393,24 @@ class APSIMAdapter:
 
     name = ADAPTER_NAME
     version = MODEL_VERSION
+    capabilities = ModelCapabilities(
+        display_name="APSIM",
+        phenology_parameter=CalibrationParameter(
+            "juvenile_tt", 211.0, (100.0, 350.0, 25.0), 5.0
+        ),
+        yield_parameter=CalibrationParameter(
+            "grain_number_scale", 1.0, (0.5, 1.5, 0.1), 0.02
+        ),
+        supported_folds=(FoldStrategy.HELD_YEAR,),
+        weather_strategy=WeatherStrategy.LEGACY_CROSSYEAR,
+        scan_request_strategy=ScanRequestStrategy.PER_DATE,
+        report_notes=(
+            "- 开花日期采用 APSIM Maize 的 `Flowering` 事件，"
+            "与 G2F 花粉日期作代理比较。",
+            "- 土壤、水氮、施肥和 Dekalb_XL82 品种均为固定探索情景。",
+            "- 全局校准仅拟合 `juvenile_tt` 与 `grain_number_scale`。",
+        ),
+    )
 
     def __init__(
         self,
@@ -400,8 +421,7 @@ class APSIMAdapter:
         root = _repo_root()
         self.executable = (executable or root / "bin/apsim").resolve()
         self.template_path = (
-            template_path
-            or root / ".tools/apsim/2026.9.8116.0/Examples/Maize.apsimx"
+            template_path or root / ".tools/apsim/2026.9.8116.0/Examples/Maize.apsimx"
         ).resolve()
 
     @property
@@ -424,15 +444,14 @@ class APSIMAdapter:
         parameters = dict(request.model_parameters)
         requested_version = str(parameters.get("model_version", self.version))
         if requested_version != self.version:
-            raise APSIMValidationError(
-                f"model version must be APSIM {self.version}"
-            )
+            raise APSIMValidationError(f"model version must be APSIM {self.version}")
         if request.environment.environment_id != request.management.environment_id:
             raise APSIMValidationError("management environment does not match request")
         records = sorted(request.environment.weather, key=lambda item: item.date)
-        expected = [timestamp.date() for timestamp in pd.date_range(
-            request.start_date, request.end_date
-        )]
+        expected = [
+            timestamp.date()
+            for timestamp in pd.date_range(request.start_date, request.end_date)
+        ]
         if [record.date for record in records] != expected:
             raise APSIMValidationError(
                 "every calendar day in the inclusive simulation interval "
@@ -472,9 +491,7 @@ class APSIMAdapter:
             self.validate(request)
         environments = {request.environment.environment_id for request in ordered}
         if len(environments) != 1:
-            raise APSIMValidationError(
-                "one APSIM batch must share one environment"
-            )
+            raise APSIMValidationError("one APSIM batch must share one environment")
         actual_version = _reported_version(str(self.executable))
         if actual_version != self.version:
             raise APSIMValidationError(

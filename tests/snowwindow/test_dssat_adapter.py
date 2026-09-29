@@ -95,8 +95,7 @@ def test_summary_distinguishes_maturity_from_missing_output():
 
 def test_cultivar_tuning_only_updates_reference_row():
     reference = (
-        "IB0035 McCurdy 84aa         . IB0001 259.0 1.193 947.1 "
-        "924.3 8.168 43.00\n"
+        "IB0035 McCurdy 84aa         . IB0001 259.0 1.193 947.1 924.3 8.168 43.00\n"
     )
     other = "IB0036 other                    259.0 1.193 947.1 924.3\n"
     tuned = render_cultivar(reference + other, 170.0, 790.0)

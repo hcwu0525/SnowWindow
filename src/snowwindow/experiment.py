@@ -10,6 +10,7 @@ from typing import Any
 
 import pandas as pd
 
+from snowwindow.adapters import resolve_model_adapter
 from snowwindow.config import ExperimentConfig
 from snowwindow.domain import (
     Environment,
@@ -17,6 +18,7 @@ from snowwindow.domain import (
     SimulationRequest,
     SoilLayer,
     WeatherRecord,
+    WeatherStrategy,
 )
 from snowwindow.models.aquacrop import simulation_end_for_planting
 
@@ -200,9 +202,7 @@ def load_cached_power_weather(
         columns=["environment_id", "date", *WEATHER_COLUMNS, "source_filename"],
     )
     environment_rows = frame.loc[frame["environment_id"].eq(environment_id)].copy()
-    environment_rows["date"] = pd.to_datetime(
-        environment_rows["date"]
-    ).dt.date
+    environment_rows["date"] = pd.to_datetime(environment_rows["date"]).dt.date
     weather = environment_rows.sort_values("date").reset_index(drop=True)
     provenance = {
         "source": "G2F full-year NASA POWER forcing",
@@ -336,13 +336,14 @@ def build_observed_requests(
     parameters = {**dict(config.model.parameters), **(model_parameters or {})}
     requests: dict[str, SimulationRequest] = {}
     provenance_rows = []
+    model = resolve_model_adapter(config)
+    loader = (
+        load_legacy_crossyear_weather
+        if model.capabilities.weather_strategy is WeatherStrategy.LEGACY_CROSSYEAR
+        else load_cached_power_weather
+    )
     for unit in units.to_dict("records"):
         environment_id = str(unit["environment_id"])
-        loader = (
-            load_legacy_crossyear_weather
-            if config.model.name == "apsim"
-            else load_cached_power_weather
-        )
         weather, provenance = loader(config, environment_id)
         if weather.empty:
             continue

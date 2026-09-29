@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Protocol, runtime_checkable
 
-from snowwindow.domain import SimulationRequest, SimulationResult
+from snowwindow.domain import (
+    ModelCapabilities,
+    SimulationRequest,
+    SimulationResult,
+)
 
 
 @runtime_checkable
@@ -19,6 +23,10 @@ class ModelAdapter(Protocol):
     @property
     def version(self) -> str:
         """Version of the underlying model implementation."""
+
+    @property
+    def capabilities(self) -> ModelCapabilities:
+        """Declarative behavior consumed by shared experiment stages."""
 
     def validate(self, request: SimulationRequest) -> None:
         """Raise a useful error when a request cannot be run."""

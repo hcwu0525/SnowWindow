@@ -10,6 +10,7 @@ from snowwindow.config import load_config
 from snowwindow.domain import (
     Environment,
     ManagementUnit,
+    ModelCapabilities,
     RunStatus,
     SimulationRequest,
     SimulationResult,
@@ -249,6 +250,7 @@ simulation:
     class RecordingAdapter:
         name = "fake"
         version = "1"
+        capabilities = ModelCapabilities()
 
         def __init__(self) -> None:
             self.requests = []
@@ -392,9 +394,7 @@ simulation:
                         if status is RunStatus.MATURED
                         else {}
                     ),
-                    "dry_yield_mg_ha": 10.0
-                    if status is RunStatus.MATURED
-                    else None
+                    "dry_yield_mg_ha": 10.0 if status is RunStatus.MATURED else None,
                 },
                 failure_reason=None if status is RunStatus.MATURED else "died",
             )

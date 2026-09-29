@@ -1,0 +1,160 @@
+"""Machine- and human-readable indexes for experiment output directories."""
+
+from __future__ import annotations
+
+import json
+import os
+import uuid
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+ARTIFACT_FIELDS = {
+    "report_path": "report/report.md",
+    "metrics_path": "validation/metrics.csv",
+    "summary_path": "scan/summary.csv",
+    "windows_path": "scan/windows.csv",
+    "parameters_path": "calibration/parameters.json",
+}
+
+
+def _relative(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def _model_name(experiment_dir: Path) -> str:
+    sources = (
+        experiment_dir / "config.yaml",
+        experiment_dir / "manifests/prepare_manifest.json",
+        experiment_dir / "calibration/manifest.json",
+        experiment_dir / "scan/manifest.json",
+    )
+    for path in sources:
+        if not path.is_file():
+            continue
+        try:
+            if path.suffix == ".yaml":
+                loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+                model = loaded.get("model", {}) if isinstance(loaded, dict) else {}
+                name = model.get("name") if isinstance(model, dict) else None
+            else:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                name = loaded.get("adapter_name") or loaded.get("model")
+        except (OSError, ValueError, yaml.YAMLError):
+            continue
+        normalized = str(name or "").strip()
+        if normalized:
+            return normalized
+    return "unknown"
+
+
+def _status(experiment_dir: Path, is_legacy: bool) -> str:
+    existing = [
+        path for path in ARTIFACT_FIELDS.values() if (experiment_dir / path).is_file()
+    ]
+    if existing and len(existing) == len(ARTIFACT_FIELDS):
+        return "complete"
+    if existing:
+        return "partial"
+    if is_legacy:
+        return "legacy"
+    marker_names = (
+        "verification.json",
+        "native_install_manifest.json",
+        "install_manifest.txt",
+    )
+    if any((experiment_dir / name).is_file() for name in marker_names):
+        return "setup"
+    return "partial"
+
+
+def _record(experiments_root: Path, experiment_dir: Path) -> dict[str, Any]:
+    is_legacy = "legacy" in experiment_dir.relative_to(experiments_root).parts
+    record: dict[str, Any] = {
+        "experiment_id": _relative(experiment_dir, experiments_root),
+        "model": _model_name(experiment_dir),
+        "status": _status(experiment_dir, is_legacy),
+        "config_path": (
+            "config.yaml" if (experiment_dir / "config.yaml").is_file() else None
+        ),
+        "notes": "Historical output retained under outputs/experiments/legacy."
+        if is_legacy
+        else "",
+    }
+    record.update(
+        {
+            field: _relative(experiment_dir / relative, experiment_dir)
+            if (experiment_dir / relative).is_file()
+            else None
+            for field, relative in ARTIFACT_FIELDS.items()
+        }
+    )
+    return record
+
+
+def _atomic_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    temporary.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def _atomic_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    temporary.write_text(text, encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def build_catalog(output_root: Path) -> tuple[list[dict[str, Any]], Path, Path]:
+    """Scan an output root and write experiments/INDEX.md and catalog.json."""
+
+    experiments_root = output_root / "experiments"
+    if not experiments_root.is_dir():
+        raise FileNotFoundError(f"experiments directory is missing: {experiments_root}")
+
+    top_level_directories = sorted(
+        (path for path in experiments_root.iterdir() if path.is_dir()),
+        key=lambda path: path.name,
+    )
+    records: list[dict[str, Any]] = []
+    for directory in top_level_directories:
+        if directory.name != "legacy":
+            records.append(_record(experiments_root, directory))
+            continue
+        legacy_children = sorted(
+            (path for path in directory.iterdir() if path.is_dir()),
+            key=lambda path: path.name,
+        )
+        if not legacy_children:
+            records.append(_record(experiments_root, directory))
+        else:
+            records.extend(
+                _record(experiments_root, child) for child in legacy_children
+            )
+
+    records.sort(key=lambda record: record["experiment_id"])
+    index_path = experiments_root / "INDEX.md"
+    json_path = experiments_root / "catalog.json"
+    lines = [
+        "# Experiment catalog",
+        "",
+        "This index is generated by `snowwindow catalog`; do not edit manually.",
+        "",
+        "| Experiment | Model | Status | Report |",
+        "| --- | --- | --- | --- |",
+    ]
+    for record in records:
+        report = record["report_path"] or "-"
+        lines.append(
+            f"| {record['experiment_id']} | {record['model']} | "
+            f"{record['status']} | {report} |"
+        )
+    lines.append("")
+    _atomic_text(index_path, "\n".join(lines))
+    _atomic_json(json_path, records)
+    return records, index_path, json_path
