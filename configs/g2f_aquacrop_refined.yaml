@@ -1,3 +1,6 @@
+# 2026-10-27: G2F full_year normalized weather only; no legacy POWER cache.
+# 2024 simulations/candidates end by 2024-11-10; keep leap day and missing values.
+# Use a new experiment_id when old snapshots/results already exist.
 experiment_id: g2f_aquacrop_refined
 data_dir: ../data
 output_dir: ../outputs
@@ -30,6 +33,7 @@ simulation:
   scan_fractions: [0.90, 0.95]
   scan_all_dates: true
   scan_horizon: cross_year
+  # Research gap: no automatic next-year substitution; cross-year coverage unresolved.
   continuation_weather_by_environment: {}
   workers: 8
   parameter_sets:

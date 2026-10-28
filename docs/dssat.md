@@ -19,11 +19,23 @@
 | `Genotype/MZCER048.CUL`、`.ECO`、`.SPE` | 品种、生态型、物种参数 |
 | `Soil/SOIL.SOL` | 通用参考土壤剖面 |
 
-代码及官方数据需另行安装；`.tools/`、`data/` 与 `outputs/`
-不随本仓库提交。此工作区的 `DSSATPRO.L48` 使用
-`/home/users/haochen.wu/.dssat` 短路径别名指向安装目录，
-以避开 DSSAT 旧式固定宽度路径读取限制。更换机器时，必须同步
-配置该别名或将 profile 改为本机可读取的短路径。无需 root。
+代码与官方数据分发需自行取得，并独立确认其许可/授权；仓库不会自动安装
+商业或受限引擎。`.tools/`、`dssat-csm-os/`、`data/` 与 `outputs/`
+不随本仓库提交。DSSAT 有旧式固定宽度路径读取限制，应给安装目录建立
+当前用户可写的短路径别名，并同步修改 `DSSATPRO.L48` 各资源路径。
+例如从仓库根目录执行（以下为示意，先确认目标别名不存在）：
+
+```bash
+set -e
+test ! -e "$HOME/dssat48"
+test ! -L "$HOME/dssat48"
+ln -s "$PWD/.tools/dssat/4.8.6.2" "$HOME/dssat48"
+```
+
+profile 中填写该别名展开后的实际绝对短路径，例如
+`/home/alice/dssat48/Genotype`、`/home/alice/dssat48/Soil`；
+不要填写字面量 `$HOME`，也不要复用他人用户名。若用户目录本身太长，
+另选本机可写的短路径。迁移时检查所有 profile 条目，而不只是可执行文件。
 
 本地 4.8.6.2 源码将 `MZCER048.ECO` 的 `CDAY` 小数形式误读为
 整数，导致官方示例在 `MZPHEN` 报错；补丁见
@@ -40,14 +52,32 @@ cmake -S dssat-csm-os -B .tools/dssat/build-local \
   -DCMAKE_Fortran_COMPILER=gfortran -DCMAKE_BUILD_TYPE=RELEASE \
   -DDYNAMIC_LINK=ON
 cmake --build .tools/dssat/build-local -j 8
+mkdir -p .tools/dssat/4.8.6.2
 cp .tools/dssat/build-local/bin/dscsm048 .tools/dssat/4.8.6.2/dscsm048
 ```
 
-先用官方 `UFGA8201.MZX` 做运行时检查（不属于 G2F 结果）：
+上面只构建可执行文件，不会下载或安装官方数据。另行恢复表中全部文件并
+配置 profile 后才能运行。保留源码版本、补丁状态、编译器和构建选项；
+适配器会对自身源码、可执行文件、试验模板、CUL/ECO/SPE、土壤和 profile
+计算 SHA256。不要修改历史 manifest 来冒充当前指纹。
+
+先用官方 `UFGA8201.MZX` 做运行时检查（不属于 G2F 结果）。
+上表是适配器必需文件，不是官方示例的完整输入：此示例还必须恢复
+`Weather/UFGA8201.WTH`（1982 年 UFGA 日天气）。下面把天气和已配置的
+`DSSATPRO.L48` 一起复制到独立工作目录，显式满足 DSSAT 的当前目录优先查找；
+profile 的 `WED`、`SLD`、`CRD`、`STD` 等条目应指向完整安装中的天气、
+土壤、品种和标准数据目录，不能只恢复可执行文件。若另选官方试验，
+需要按其站点、年份、土壤与品种恢复对应资源，不能沿用此天气文件。
+这些官方天气仅服务运行时示例，不作为 G2F 实验驱动或其缺测替代。
 
 ```bash
+set -e
+test ! -e outputs/experiments/dssat_runtime/smoke
+test ! -L outputs/experiments/dssat_runtime/smoke
 mkdir -p outputs/experiments/dssat_runtime/smoke
 cp .tools/dssat/4.8.6.2/Maize/UFGA8201.MZX \
+  .tools/dssat/4.8.6.2/Weather/UFGA8201.WTH \
+  .tools/dssat/4.8.6.2/DSSATPRO.L48 \
   outputs/experiments/dssat_runtime/smoke/
 ( cd outputs/experiments/dssat_runtime/smoke &&
   "$OLDPWD/.tools/dssat/4.8.6.2/dscsm048" C UFGA8201.MZX 1 )
@@ -76,13 +106,32 @@ HARWT=2293 kg/ha；它只检查原生引擎与官方数据是否能配合运行�
 缓存键包含请求、适配器、可执行文件及参考输入文件指纹。
 准备阶段另在 manifest 中记录原始输入指纹。
 
+天气策略更新（2026-10-27）：DSSAT 与另两模型统一从本实验
+`normalized/weather.parquet` 读取 G2F `full_year` 标准化天气，不读取
+legacy POWER CSV/provenance，也无需恢复外部天气缓存。先读当前环境，
+只有 `simulation.scan_horizon: cross_year` 且
+`continuation_weather_by_environment` 显式映射下一年同站点 G2F 环境时
+才追加；无映射不自动替代。模拟受实际天气截止日限制并记录尾部截断，
+内部缺日期/核心值仍保留失败。2024 相关模拟与 scan/forecast 候选播期
+不得晚于 2024-11-10（315 天，保留 2/29）；7/12–7/14 核心缺测不得
+补零、外部替代或改标成熟。该日期不是 forecast 信息截止日，预测仍使用
+G2F 历史同站点情景，不用目标年未来实测选参。模型结果缓存和断点恢复
+继续保留，与外部天气缓存不同。
+
 ## 六环境复现与解释
 
-从仓库根目录执行；需要本地 G2F 源文件及跨年延续天气缓存：
+从仓库根目录执行；需要本地 G2F 源文件、独立安装的引擎和参考输入。
+若同 ID 已有旧快照/历史产物，先复制 YAML 并设置新 ID，再替换命令路径：
 
 ```bash
 .venv/bin/python -m snowwindow run --config configs/g2f_dssat_demo.yaml
 ```
+
+当前 demo 提供五条 G2F 显式下一年映射，但没有 `MOH2_2024`，不配置或
+伪造；2024 的实际缺测仍保留。完整前提见[上手指南](getting-started.md)。
+新快照自动记录 `weather_policy`，不得与旧快照/产物混用。
+下列结果与证据是 2026-09-27 的本地历史记录，clone 不包含；
+来源、数值和日期均保留，不代表当前 G2F 统一策略已通过实验。
 
 [配置文件](../configs/g2f_dssat_demo.yaml)指定 INH1、MOH2、
 NYH2 在 2022/2023 年的六个环境。2022 用于 P1/G2 校准，

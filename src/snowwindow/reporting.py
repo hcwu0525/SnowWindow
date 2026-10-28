@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
 from snowwindow.config import ExperimentConfig
 from snowwindow.domain import ModelCapabilities
+from snowwindow.weather import G2F_END_DATE, weather_end_for_year
 
 DEFAULT_REPORT_NOTES = (
     "- 开花日期采用 AquaCrop `HIstart` 首次跨越的日末代理，并非独立花粉事件。",
@@ -274,15 +276,33 @@ def report_stage(config: ExperimentConfig) -> Path:
         else metrics
     )
     model_notes = list(capabilities.report_notes)
+    evaluation_years = getattr(
+        getattr(config, "selection", None), "evaluation_years", ()
+    )
+    evaluation_label = ", ".join(str(year) for year in evaluation_years)
+    calendar_notes = []
+    for year in evaluation_years:
+        start = date(year, 1, 1)
+        end = weather_end_for_year(year)
+        days = (end - start).days + 1
+        calendar_notes.append(
+            f"- 评估年播期日历范围：{start.isoformat()} 至 {end.isoformat()}"
+            f"（含首尾 {days} 天）。"
+        )
     report = [
         f"# G2F {model_label} 全年播期扫描报告",
         "",
         f"- 扫描记录：{len(summary):,} 行。",
         f"- 环境数：{summary['environment_id'].nunique()}。",
         f"- 参数组：{', '.join(sorted(summary['parameter_set'].unique()))}。",
-        "- 气象驱动：已缓存的同坐标 NASA POWER AG 全年数据；不等同于竞赛站点原始天气。",
+        "- 气象驱动：仅使用规范化 G2F `full_year` 天气；"
+        f"最晚日期为 {G2F_END_DATE.isoformat()}（含当日）。",
+        "- 保留闰日，缺日与缺失值保持原样，不补齐、不插值或零填充；"
+        "不使用外部天气下载或历史缓存回退。",
+        *calendar_notes,
         *model_notes,
-        "- 实际播期观测点仅用于验证当年真实处理；全年 365 天曲线是反事实情景。",
+        "- 实际播期观测点仅用于验证当年真实处理；"
+        "日历范围内的逐日播期曲线是反事实情景，不代表每天均有完整气象或成功模拟。",
         "",
         "## 状态统计",
         "",
@@ -296,7 +316,11 @@ def report_stage(config: ExperimentConfig) -> Path:
         report.extend(
             [
                 "",
-                "## 2023 留年验证",
+                (
+                    f"## {evaluation_label} 留年验证"
+                    if evaluation_label
+                    else "## 留年验证"
+                ),
                 "",
                 _markdown_table(held_metrics),
             ]

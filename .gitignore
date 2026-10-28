@@ -1,17 +1,32 @@
-.venv/
-.tools/
-apsim-*.deb
+# Local environments, engines and externally supplied research inputs.
+/.venv/
+/.venv-*/
+/.tools/
+/apsim-*.deb
+/dssat-csm-os/
+/data/
+/outputs/
+/.data/
+/.outputs/
+/.worktrees/
+/.superpowers/
+
+# Python build products and tool caches.
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+/build/
+/dist/
 .pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 .cache/
 .DS_Store
-data
-outputs
-.worktrees/
-.superpowers/
-.venv-linux/
-.venv-py39/
-.data/
-.outputs/
-*.egg-info/
+
+# Machine-specific settings; distributable examples remain versioned.
+.env
+.env.*
+!.env.example
+/configs/*.local.yaml
+/configs/*.local.yml

@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 
 Production code lives in `src/snowwindow/`. Data auditing and normalization are
-under `data/`; model-independent contracts are in `domain.py` and `adapters.py`;
+under `src/snowwindow/data/`; model-independent contracts are in `domain.py` and `adapters.py`;
 the AquaCrop implementation is under `models/aquacrop/`. Calibration, scanning,
 reporting, and executable stages have dedicated modules. Experiment YAML files
 live in `configs/`, and tests mirror the package under `tests/snowwindow/`.
@@ -16,16 +16,21 @@ figures, manifests, and reports under `outputs/experiments/<experiment_id>/`.
 Run commands from the repository root:
 
 - `uv venv --python 3.10 --seed .venv`: create the supported environment.
-- `.venv/bin/python -m pip install -r requirements-aquacrop.lock.txt`
-  installs pinned scientific dependencies.
-- `.venv/bin/python -m pip install -e .` installs SnowWindow for development.
+- `.venv/bin/python -m pip install -r requirements-aquacrop.lock.txt -e '.[dev]'`
+  installs pinned scientific and development dependencies.
+- `.venv/bin/python -m pip check` verifies dependency compatibility.
 - `.venv/bin/python -m snowwindow run --config configs/g2f_demo.yaml`
   runs preparation through reporting.
-- `.venv/bin/python -m pytest -q` runs all tests.
-- `.venv/bin/ruff check src tests/snowwindow` checks style.
+- `make check` checks dependencies, style and engine/data-independent tests.
+- `make test-integration` runs local real-model/data tests.
+- `.venv/bin/python -m pytest -q` runs all tests. For selection, use
+  `PYTEST_ADDOPTS="-m 'not integration'"` instead of passing `-m` directly;
+  AquaCrop 3.1.0 uses that argument during import.
+- `.venv/bin/python -m ruff check src tests/snowwindow scripts` checks style.
 
 Individual CLI stages include `audit`, `prepare`, `baseline`, `calibrate`,
-`validate`, `simulate`, `scan`, and `report`.
+`validate`, `simulate`, `scan`, `report`, `forecast`, and `catalog`. `run` does not
+include `forecast`; all commands require `--config`.
 
 ## Coding Style & Naming Conventions
 

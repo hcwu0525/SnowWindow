@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +11,8 @@ from types import MappingProxyType
 from typing import Any
 
 import yaml
+
+from snowwindow.weather import WEATHER_POLICY
 
 
 @dataclass(frozen=True)
@@ -362,3 +366,114 @@ def load_config(path: Path) -> ExperimentConfig:
         calibration=calibration,
         source_path=source_path,
     )
+
+
+def _snapshot_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _snapshot_value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_snapshot_value(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def _snapshot_document(config: ExperimentConfig) -> dict[str, Any]:
+    return _snapshot_value(
+        {
+            "experiment_id": config.experiment_id,
+            "weather_policy": WEATHER_POLICY,
+            "data_dir": config.data_dir,
+            "output_dir": config.output_dir,
+            "model": {
+                "name": config.model.name,
+                "parameters": config.model.parameters,
+            },
+            "selection": {
+                **config.selection.options,
+                "calibration_years": config.selection.calibration_years,
+                "evaluation_years": config.selection.evaluation_years,
+                "environments": config.selection.environments,
+                "all_eligible_environments": config.selection.all_eligible_environments,
+                "allow_assumed_rainfed": config.selection.allow_assumed_rainfed,
+                "exclude_default_soil_from_calibration": (
+                    config.selection.exclude_default_soil_from_calibration
+                ),
+            },
+            "calibration": {
+                "phenology_grid": config.calibration.phenology_grid,
+                "phenology_fine_step": config.calibration.phenology_fine_step,
+                "yield_grid": config.calibration.yield_grid,
+                "yield_fine_step": config.calibration.yield_fine_step,
+            },
+            "simulation": {
+                **config.simulation.options,
+                "scan_fractions": config.simulation.scan_fractions,
+                "workers": config.simulation.workers,
+                "scan_all_dates": config.simulation.scan_all_dates,
+                "parameter_sets": config.simulation.parameter_sets,
+            },
+        }
+    )
+
+
+def save_config_snapshot(config: ExperimentConfig) -> Path:
+    """Persist a reloadable CLI configuration without replacing prior settings."""
+
+    path = config.experiment_dir / "config.yaml"
+    expected = _snapshot_document(config)
+    if not path.exists():
+        serialized = yaml.safe_dump(expected, allow_unicode=True, sort_keys=False)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_prefix = f".{path.name}-"
+        artifacts = [
+            entry for entry in path.parent.iterdir()
+            if entry != path and not (
+                entry.name.startswith(temporary_prefix) and entry.name.endswith(".tmp")
+            )
+        ]
+        if artifacts and not path.exists():
+            raise ConfigError(
+                f"experiment_id {config.experiment_id!r} has existing outputs "
+                f"without a configuration snapshot at {path}; "
+                "use a new experiment_id to preserve historical outputs"
+            )
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=temporary_prefix,
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                stream.write(serialized)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                # Publish a complete document without replacing a competing writer.
+                os.link(temporary, path)
+            except FileExistsError:
+                pass
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    try:
+        stored = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"invalid configuration snapshot at {path}: {exc}") from exc
+    if not isinstance(stored, dict) or stored.get("weather_policy") != WEATHER_POLICY:
+        raise ConfigError(
+            f"experiment_id {config.experiment_id!r} has an incompatible "
+            "weather policy "
+            f"at {path}; use a new experiment_id"
+        )
+    existing = load_config(path)
+    if _snapshot_document(existing) != expected:
+        raise ConfigError(
+            f"experiment_id {config.experiment_id!r} already has a different "
+            f"configuration at {path}; use a new experiment_id"
+        )
+    return path

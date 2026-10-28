@@ -4,23 +4,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from snowwindow.adapters import resolve_model_adapter
+from snowwindow.adapters import ModelAdapter
 from snowwindow.config import ExperimentConfig
 from snowwindow.domain import (
     Environment,
     ManagementUnit,
+    RunStatus,
     SimulationRequest,
+    SimulationResult,
     SoilLayer,
     WeatherRecord,
-    WeatherStrategy,
 )
 from snowwindow.models.aquacrop import simulation_end_for_planting
+from snowwindow.weather import G2F_END_DATE, WEATHER_POLICY
 
 WEATHER_COLUMNS = (
     "T2M_MIN",
@@ -78,6 +81,8 @@ def build_simulation_request(
         if pd.isna(timestamp):
             raise ValueError("planting date is missing")
         sowing = timestamp.date()
+    if sowing > G2F_END_DATE:
+        raise ValueError(f"planting date exceeds G2F weather end {G2F_END_DATE}")
     dates = pd.to_datetime(weather["date"], errors="raise")
     horizon_days = model_parameters.get("simulation_horizon_days")
     planned_end = (
@@ -89,7 +94,9 @@ def build_simulation_request(
     if valid_dates.empty:
         raise ValueError(f"weather is empty for {environment['environment_id']}")
     weather_end = valid_dates.max().date()
-    end_date = min(planned_end, weather_end)
+    end_date = min(planned_end, weather_end, G2F_END_DATE)
+    if end_date < sowing:
+        raise ValueError(f"G2F weather ends before planting date {sowing}")
     subset = weather.loc[
         dates.between(pd.Timestamp(sowing.year, 1, 1), pd.Timestamp(end_date))
     ].copy()
@@ -148,6 +155,11 @@ def build_simulation_request(
         metadata={
             "elevation_m": float(environment.get("elevation_m", 0.0) or 0.0),
             "coordinate_source": environment.get("coordinate_source"),
+            "weather_source": "g2f_full_year",
+            "planned_end_date": planned_end.isoformat(),
+            "weather_end_date": weather_end.isoformat(),
+            "simulation_end_date": end_date.isoformat(),
+            "weather_horizon_truncated": end_date < planned_end,
         },
     )
     return SimulationRequest(
@@ -161,6 +173,48 @@ def build_simulation_request(
         model_parameters=model_parameters,
         parameter_set_id=parameter_set_id,
         output_dir=output_dir,
+    )
+
+
+def weather_failure_result(
+    request: SimulationRequest, model: ModelAdapter
+) -> SimulationResult | None:
+    """Keep G2F gaps as invalid inputs before native dispatch or cache hashing."""
+
+    if request.environment.metadata.get("weather_source") != "g2f_full_year":
+        return None
+    records = request.environment.weather
+    dates = [record.date for record in records]
+    expected = {
+        request.start_date + timedelta(days=index)
+        for index in range((request.end_date - request.start_date).days + 1)
+    }
+    reason = None
+    if len(dates) != len(expected) or set(dates) != expected:
+        missing = sorted(expected - set(dates))[:5]
+        reason = "G2F weather calendar gaps/duplicates: " + ", ".join(map(str, missing))
+    else:
+        for record in records:
+            try:
+                complete = all(
+                    math.isfinite(float(record.values[column]))
+                    for column in WEATHER_COLUMNS
+                )
+            except (KeyError, TypeError, ValueError):
+                complete = False
+            if not complete:
+                reason = f"G2F weather core values missing on {record.date}"
+                break
+    if reason is None:
+        return None
+    return SimulationResult(
+        request_id=request.request_id,
+        adapter_name=model.name,
+        adapter_version=model.version,
+        status=RunStatus.INVALID_INPUT,
+        summary={"dry_yield_mg_ha": None, "flowering_proxy_dap": None},
+        failure_reason=reason,
+        diagnostics={"weather_policy": WEATHER_POLICY},
     )
 
 
@@ -189,10 +243,10 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load_cached_power_weather(
+def load_g2f_weather(
     config: ExperimentConfig, environment_id: str
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Load audited current/next-year POWER forcing from the prepared tables."""
+    """Load only prepared G2F weather, with explicitly mapped continuation."""
 
     weather_path = config.experiment_dir / "normalized/weather.parquet"
     if not weather_path.is_file():
@@ -201,11 +255,45 @@ def load_cached_power_weather(
         weather_path,
         columns=["environment_id", "date", *WEATHER_COLUMNS, "source_filename"],
     )
-    environment_rows = frame.loc[frame["environment_id"].eq(environment_id)].copy()
+    environment_ids = [environment_id]
+    year = int(environment_id.rsplit("_", 1)[1])
+    horizon = config.simulation.options.get("scan_horizon", "cross_year")
+    if horizon not in {"same_year", "cross_year"}:
+        raise ValueError(f"unsupported scan_horizon: {horizon}")
+    mapping = config.simulation.options.get("continuation_weather_by_environment", {})
+    if horizon == "cross_year" and year < G2F_END_DATE.year:
+        continuation_id = mapping.get(environment_id)
+        if continuation_id:
+            expected = f"{environment_id.rsplit('_', 1)[0]}_{year + 1}"
+            if continuation_id != expected:
+                raise ValueError(
+                    f"G2F continuation for {environment_id} must be {expected}"
+                )
+            environment_ids.append(continuation_id)
+    for selected_id in environment_ids:
+        if not frame["environment_id"].eq(selected_id).any():
+            raise ValueError(
+                f"G2F weather is missing for {selected_id}: {weather_path}"
+            )
+    environment_rows = frame.loc[frame["environment_id"].isin(environment_ids)].copy()
     environment_rows["date"] = pd.to_datetime(environment_rows["date"]).dt.date
+    expected_years = environment_rows["environment_id"].str.rsplit("_", n=1).str[-1]
+    actual_years = environment_rows["date"].map(lambda day: str(day.year))
+    if not actual_years.eq(expected_years).all():
+        raise ValueError("G2F weather dates do not match environment years")
+    environment_rows = environment_rows.loc[
+        environment_rows["date"].le(G2F_END_DATE)
+    ]
+    if environment_rows.empty:
+        raise ValueError(f"no G2F weather on or before {G2F_END_DATE}")
+    if environment_rows["date"].duplicated().any():
+        raise ValueError("duplicate dates in G2F weather")
     weather = environment_rows.sort_values("date").reset_index(drop=True)
+    weather["source"] = weather["source_filename"]
     provenance = {
-        "source": "G2F full-year NASA POWER forcing",
+        "source": "G2F full-year weather",
+        "environment_ids": environment_ids,
+        "end_date": weather["date"].max().isoformat(),
         "files": [
             {
                 "path": str(weather_path),
@@ -215,108 +303,6 @@ def load_cached_power_weather(
         "elevation_m": 0.0,
     }
     return weather, provenance
-
-    # Retained legacy loader for explicit cross-year POWER cache users.
-    current = config.output_dir / "aquacrop_demo/weather" / f"{environment_id}.csv"
-    continuation = (
-        config.output_dir
-        / "aquacrop_crossyear/weather"
-        / f"{environment_id}_next_year.csv"
-    )
-    current_provenance = (
-        config.output_dir
-        / "aquacrop_demo/weather_raw"
-        / f"{environment_id}.provenance.json"
-    )
-    continuation_provenance = (
-        config.output_dir
-        / "aquacrop_crossyear/weather_raw"
-        / f"{environment_id}_next_year.provenance.json"
-    )
-    required = (current, continuation, current_provenance, continuation_provenance)
-    missing = [str(path) for path in required if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(
-            "complete cached POWER forcing is missing: " + ", ".join(missing)
-        )
-    frames = []
-    for path in (current, continuation):
-        current_frame = pd.read_csv(path, usecols=["Date", *WEATHER_COLUMNS])
-        current_frame = current_frame.rename(columns={"Date": "date"})
-        current_frame["date"] = pd.to_datetime(current_frame["date"]).dt.date
-        current_frame["source"] = str(path)
-        frames.append(current_frame)
-    weather = (
-        pd.concat(frames, ignore_index=True)
-        .sort_values("date")
-        .drop_duplicates("date", keep="first")
-        .reset_index(drop=True)
-    )
-    provenance_rows = [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in (current_provenance, continuation_provenance)
-    ]
-    provenance = {
-        "source": "NASA POWER AG cached full-year forcing",
-        "files": [
-            {"path": str(path), "sha256": _sha256_file(path)} for path in required
-        ],
-        "elevation_m": float(provenance_rows[0].get("elevation_m", 0.0)),
-    }
-    return weather, provenance
-
-
-def load_legacy_crossyear_weather(
-    config: ExperimentConfig, environment_id: str
-) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Load the explicit legacy current/next-year POWER cache."""
-
-    current = config.output_dir / "aquacrop_demo/weather" / f"{environment_id}.csv"
-    continuation = (
-        config.output_dir
-        / "aquacrop_crossyear/weather"
-        / f"{environment_id}_next_year.csv"
-    )
-    current_provenance = (
-        config.output_dir
-        / "aquacrop_demo/weather_raw"
-        / f"{environment_id}.provenance.json"
-    )
-    continuation_provenance = (
-        config.output_dir
-        / "aquacrop_crossyear/weather_raw"
-        / f"{environment_id}_next_year.provenance.json"
-    )
-    required = (current, continuation, current_provenance, continuation_provenance)
-    missing = [str(path) for path in required if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(
-            "complete cached POWER forcing is missing: " + ", ".join(missing)
-        )
-    frames = []
-    for path in (current, continuation):
-        frame = pd.read_csv(path, usecols=["Date", *WEATHER_COLUMNS])
-        frame = frame.rename(columns={"Date": "date"})
-        frame["date"] = pd.to_datetime(frame["date"]).dt.date
-        frame["source"] = str(path)
-        frames.append(frame)
-    weather = (
-        pd.concat(frames, ignore_index=True)
-        .sort_values("date")
-        .drop_duplicates("date", keep="first")
-        .reset_index(drop=True)
-    )
-    provenance_rows = [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in (current_provenance, continuation_provenance)
-    ]
-    return weather, {
-        "source": "NASA POWER AG cached full-year forcing",
-        "files": [
-            {"path": str(path), "sha256": _sha256_file(path)} for path in required
-        ],
-        "elevation_m": float(provenance_rows[0].get("elevation_m", 0.0)),
-    }
 
 
 def build_observed_requests(
@@ -336,17 +322,9 @@ def build_observed_requests(
     parameters = {**dict(config.model.parameters), **(model_parameters or {})}
     requests: dict[str, SimulationRequest] = {}
     provenance_rows = []
-    model = resolve_model_adapter(config)
-    loader = (
-        load_legacy_crossyear_weather
-        if model.capabilities.weather_strategy is WeatherStrategy.LEGACY_CROSSYEAR
-        else load_cached_power_weather
-    )
     for unit in units.to_dict("records"):
         environment_id = str(unit["environment_id"])
-        weather, provenance = loader(config, environment_id)
-        if weather.empty:
-            continue
+        weather, provenance = load_g2f_weather(config, environment_id)
         environment = environments.loc[environment_id].to_dict()
         environment["environment_id"] = environment_id
         environment["elevation_m"] = provenance["elevation_m"]

@@ -250,7 +250,7 @@ class DSSATAdapter:
             "G2", G2_DEFAULT, (700.0, 950.0, 50.0), 10.0
         ),
         supported_folds=(FoldStrategy.HELD_YEAR,),
-        weather_strategy=WeatherStrategy.LEGACY_CROSSYEAR,
+        weather_strategy=WeatherStrategy.G2F,
         scan_request_strategy=ScanRequestStrategy.SLICE_WEATHER_HORIZON,
         report_notes=(
             "- 开花日期采用 DSSAT CERES-Maize 输出的 ADAT 开花日，"

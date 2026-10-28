@@ -26,7 +26,9 @@ from snowwindow.scan import (
 
 def test_calendar_dates_preserve_leap_year() -> None:
     assert len(calendar_dates(2023)) == 365
-    assert len(calendar_dates(2024)) == 366
+    assert len(calendar_dates(2024)) == 315
+    assert date(2024, 2, 29) in calendar_dates(2024)
+    assert calendar_dates(2024)[-1] == date(2024, 11, 10)
 
 
 def test_batch_adapter_runs_once_per_environment_and_parameter_group() -> None:
@@ -223,7 +225,7 @@ simulation:
         }
     )
     monkeypatch.setattr(
-        "snowwindow.scan.load_cached_power_weather",
+        "snowwindow.scan.load_g2f_weather",
         lambda config, environment_id: (weather, {"source": "test"}),
     )
     calibration_dir = config.experiment_dir / "calibration"

@@ -16,8 +16,7 @@ from typing import Any
 class WeatherStrategy(Enum):
     """How an adapter expects experiment weather to be assembled."""
 
-    CACHED_POWER = "cached_power"
-    LEGACY_CROSSYEAR = "legacy_crossyear"
+    G2F = "g2f"
 
 
 class ScanRequestStrategy(Enum):
@@ -59,7 +58,7 @@ class ModelCapabilities:
     site_phenology_parameter: str = "phenology_scale_site"
     site_yield_parameter: str = "HI0_site"
     supported_folds: tuple[FoldStrategy, ...] = (FoldStrategy.HELD_YEAR,)
-    weather_strategy: WeatherStrategy = WeatherStrategy.CACHED_POWER
+    weather_strategy: WeatherStrategy = WeatherStrategy.G2F
     scan_request_strategy: ScanRequestStrategy = ScanRequestStrategy.PER_DATE
     report_notes: tuple[str, ...] = ()
 

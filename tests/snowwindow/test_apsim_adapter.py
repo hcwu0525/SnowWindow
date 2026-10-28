@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -97,8 +98,70 @@ def test_render_met_batch_merges_compatible_weather_subsets(
 def test_build_document_sets_dates_sowing_and_cultivar_parameters(
     tmp_path: Path,
 ) -> None:
+    # Self-authored structural inputs, not redistributed APSIM files. The fake
+    # Models.dll is JSON bytes only and exercises resource extraction, not execution.
+    template = tmp_path / "installation/Examples/Maize.apsimx"
+    template.parent.mkdir(parents=True)
+    template.write_text(
+        json.dumps(
+            {
+                "$type": "Models.Core.Simulations, Models",
+                "Children": [
+                    {
+                        "$type": "Models.Core.Simulation, Models",
+                        "Name": "Maize",
+                        "Children": [
+                            {"Name": "Clock", "Start": "", "End": ""},
+                            {"Name": "Weather", "FileName": ""},
+                            {
+                                "Name": "Field",
+                                "Children": [
+                                    {
+                                        "Name": "Sow using a variable rule",
+                                        "CodeArray": [],
+                                    },
+                                    {
+                                        "Name": "Report",
+                                        "VariableNames": [],
+                                        "EventNames": [],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    {"$type": "Models.Storage.DataStore, Models", "Name": "DataStore"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    resource = {
+        "$type": "Models.Core.Simulations, Models",
+        "Children": [
+            {
+                "Name": "Maize",
+                "PlantType": "Maize",
+                "Children": [
+                    {
+                        "Name": "CultivarFolder",
+                        "Children": [
+                            {
+                                "Name": "Dekalb_XL82",
+                                "Command": [
+                                    "[Phenology].Juvenile.Target.FixedValue = 211",
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    library = template.parent.parent / "bin/Models.dll"
+    library.parent.mkdir()
+    library.write_text(json.dumps(resource, indent=2), encoding="utf-8")
     document, simulation_names = build_apsim_document(
-        Path(".tools/apsim/2026.9.8116.0/Examples/Maize.apsimx"),
+        template,
         [_request(tmp_path)],
         weather_filename="weather.met",
     )
@@ -242,6 +305,11 @@ def test_parse_report_treats_missing_harvest_event_as_not_matured(
 
 
 def test_adapter_rejects_noncontiguous_weather(tmp_path: Path) -> None:
+    executable = tmp_path / "fake-apsim"
+    template = tmp_path / "fake-template.apsimx"
+    executable.touch()
+    template.write_text("{}", encoding="utf-8")
+    adapter = APSIMAdapter(executable=executable, template_path=template)
     request = _request(tmp_path)
     broken = replace(
         request,
@@ -252,4 +320,4 @@ def test_adapter_rejects_noncontiguous_weather(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="calendar day"):
-        APSIMAdapter().validate(broken)
+        adapter.validate(broken)

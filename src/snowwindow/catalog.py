@@ -10,13 +10,15 @@ from typing import Any
 
 import yaml
 
-ARTIFACT_FIELDS = {
+STANDARD_ARTIFACT_FIELDS = {
     "report_path": "report/report.md",
     "metrics_path": "validation/metrics.csv",
     "summary_path": "scan/summary.csv",
     "windows_path": "scan/windows.csv",
     "parameters_path": "calibration/parameters.json",
 }
+FORECAST_REPORT_PATH = "forecast/report.md"
+FORECAST_MANIFEST_PATH = "forecast/manifest.json"
 
 
 def _relative(path: Path, root: Path) -> str:
@@ -29,6 +31,7 @@ def _model_name(experiment_dir: Path) -> str:
         experiment_dir / "manifests/prepare_manifest.json",
         experiment_dir / "calibration/manifest.json",
         experiment_dir / "scan/manifest.json",
+        experiment_dir / "forecast/manifest.json",
     )
     for path in sources:
         if not path.is_file():
@@ -51,9 +54,15 @@ def _model_name(experiment_dir: Path) -> str:
 
 def _status(experiment_dir: Path, is_legacy: bool) -> str:
     existing = [
-        path for path in ARTIFACT_FIELDS.values() if (experiment_dir / path).is_file()
+        path
+        for path in STANDARD_ARTIFACT_FIELDS.values()
+        if (experiment_dir / path).is_file()
     ]
-    if existing and len(existing) == len(ARTIFACT_FIELDS):
+    if existing and len(existing) == len(STANDARD_ARTIFACT_FIELDS):
+        return "complete"
+    forecast_report = experiment_dir / FORECAST_REPORT_PATH
+    forecast_manifest = experiment_dir / FORECAST_MANIFEST_PATH
+    if forecast_report.is_file() and forecast_manifest.is_file():
         return "complete"
     if existing:
         return "partial"
@@ -87,8 +96,13 @@ def _record(experiments_root: Path, experiment_dir: Path) -> dict[str, Any]:
             field: _relative(experiment_dir / relative, experiment_dir)
             if (experiment_dir / relative).is_file()
             else None
-            for field, relative in ARTIFACT_FIELDS.items()
+            for field, relative in STANDARD_ARTIFACT_FIELDS.items()
         }
+    )
+    record["forecast_report_path"] = (
+        FORECAST_REPORT_PATH
+        if (experiment_dir / FORECAST_REPORT_PATH).is_file()
+        else None
     )
     return record
 
@@ -149,7 +163,7 @@ def build_catalog(output_root: Path) -> tuple[list[dict[str, Any]], Path, Path]:
         "| --- | --- | --- | --- |",
     ]
     for record in records:
-        report = record["report_path"] or "-"
+        report = record["report_path"] or record["forecast_report_path"] or "-"
         lines.append(
             f"| {record['experiment_id']} | {record['model']} | "
             f"{record['status']} | {report} |"

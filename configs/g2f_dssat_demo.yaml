@@ -1,3 +1,6 @@
+# 2026-10-27: G2F full_year normalized weather only; no legacy POWER cache.
+# 2024 simulations/candidates end by 2024-11-10; keep leap day and missing values.
+# Use a new experiment_id when old snapshots/results already exist.
 experiment_id: g2f_dssat_demo
 data_dir: ../data
 output_dir: ../outputs
@@ -38,6 +41,14 @@ simulation:
   scan_fractions: [0.90, 0.95]
   scan_all_dates: true
   scan_horizon: cross_year
+  # Append same-site next-year G2F records only with cross_year + this mapping.
+  # MOH2_2024 is unavailable; mapped 2024 core gaps remain failures, not zero-fill.
+  continuation_weather_by_environment:
+    INH1_2022: INH1_2023
+    MOH2_2022: MOH2_2023
+    NYH2_2022: NYH2_2023
+    INH1_2023: INH1_2024
+    NYH2_2023: NYH2_2024
   workers: 2
   parameter_sets:
     default: {}

@@ -14,6 +14,7 @@ import pandas as pd
 
 from snowwindow.adapters import ModelAdapter
 from snowwindow.domain import RunStatus, SimulationRequest
+from snowwindow.experiment import weather_failure_result
 
 CALIBRATION_VARIABLES = ("pollen_dap", "dry_yield_mg_ha")
 
@@ -269,7 +270,9 @@ def _prediction_rows(
                 request_id=f"{request.request_id}:{parameter_name}={value}",
                 model_parameters=parameters,
             )
-            result = adapter.run(candidate)
+            result = weather_failure_result(candidate, adapter) or adapter.run(
+                candidate
+            )
             rows.append(
                 {
                     "observation_id": observation["observation_id"],
@@ -489,13 +492,14 @@ def validate_parameter_sets(
                 if site in site_overrides:
                     model_parameters.update(site_overrides[site])
             model_parameters.pop("site_overrides", None)
-            result = adapter.run(
-                replace(
-                    request,
-                    request_id=f"{request.request_id}:validation:{parameter_set_id}",
-                    parameter_set_id=parameter_set_id,
-                    model_parameters=model_parameters,
-                )
+            candidate = replace(
+                request,
+                request_id=f"{request.request_id}:validation:{parameter_set_id}",
+                parameter_set_id=parameter_set_id,
+                model_parameters=model_parameters,
+            )
+            result = weather_failure_result(candidate, adapter) or adapter.run(
+                candidate
             )
             for variable, prediction_name in prediction_names.items():
                 key = (unit_id, variable)

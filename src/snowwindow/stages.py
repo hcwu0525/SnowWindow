@@ -25,6 +25,7 @@ from snowwindow.experiment import (
     build_observed_requests,
     load_prepared_tables,
     select_representative_units,
+    weather_failure_result,
 )
 
 
@@ -73,6 +74,10 @@ def _result_row(request, result) -> dict[str, Any]:
         "failure_reason": result.failure_reason,
         "cache_key": result.diagnostics.get("cache_key"),
         **dict(result.summary),
+        "simulation_end_date": request.end_date.isoformat(),
+        "weather_horizon_truncated": request.environment.metadata.get(
+            "weather_horizon_truncated"
+        ),
     }
 
 
@@ -82,7 +87,12 @@ def baseline_stage(
     _ensure_prepared(config)
     model = _adapter(config, adapter)
     requests, provenance = build_observed_requests(config)
-    rows = [_result_row(request, model.run(request)) for request in requests.values()]
+    rows = [
+        _result_row(
+            request, weather_failure_result(request, model) or model.run(request)
+        )
+        for request in requests.values()
+    ]
     result = pd.DataFrame(rows).sort_values("management_unit_id").reset_index(drop=True)
     _atomic_table(config.experiment_dir / "baseline/summary.parquet", result)
     _atomic_table(config.experiment_dir / "baseline/summary.csv", result)

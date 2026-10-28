@@ -1,11 +1,125 @@
 # 模型分析与使用日志
 
-最后整理日期：2026-09-27。返回[文档目录](README.md)。
+最后整理日期：2026-09-30。返回[文档目录](README.md)。
 
 本日志初次整理已有文件和会话分析。以下日期是整理/核对日期；
 未记录原始执行时间的实验不据此推断其执行日期。
-2026-09-23 的历史章节为当时的只读核对；下方 DSSAT 章节记录了
+2026-09-23 的历史章节为当时的只读核对；2026-09-27 与 09-30 章节记录了
 实际执行。模型比较的当前说明见[比较文档](model-comparison.md)。
+
+## 2026-10-27 · 仓库复现文档补充（未重跑实验）
+
+状态：核对当前源码接口并补充执行文档；不是新的数值实验。
+下方各日期、参数、统计和用户已有结论均保留原记录。
+本日志所有 `outputs/` 证据链接都是本地产物，clone 不包含。
+
+- 当前配置、年份、前置条件与执行命令见 [11 配置清单](../configs/README.md)
+  及 [执行指南](experiments.md)，`run` 不含 forecast。
+- 历史章节中的“无泄漏”指当时 forecast 天气情景的信息截止政策，
+  不构成全部后续 ML 特征无泄漏的结论。oracle 派生残差及多尺度窗口
+  只是诊断，不能部署；固定窗口包含播后实测天气时也不属于播前可用输入。
+  现有函数示例见 [ML 指南](ml-experiments.md)。
+- 当前 AquaCrop 使用 normalized weather，不暗中回退 legacy POWER；
+  APSIM/DSSAT 的 baseline/校准/扫描依赖外部恢复的同布局天气四件套。
+  新旧布局规则见 [上手指南](getting-started.md)。历史驱动/时限可能不同，
+  不保证当前数值逐项复刻；refined/history 跨年缺口未因此解决。
+- 研究材料维护路径：`docs/research/G2F_播期情景模拟技术调研.md`、
+  `docs/research/计划书.md`。历史消融与离线汇报仍作为附加研究保留，
+  不承诺由主 CLI 逐项重建，不修改历史脚本或 manifest。
+
+## 2026-10-10 · 三模型 ±30 天扩展播期预测
+
+状态：已完成；用于检验候选窗口从实际播期前后 14 天扩展到 30 天后，
+推荐日期和 regret 是否发生实质变化。
+
+- 配置：
+  [`g2f_forecast_demo_radius30.yaml`](../configs/g2f_forecast_demo_radius30.yaml)、
+  [`g2f_apsim_forecast_demo_radius30.yaml`](../configs/g2f_apsim_forecast_demo_radius30.yaml)、
+  [`g2f_dssat_forecast_demo_radius30.yaml`](../configs/g2f_dssat_forecast_demo_radius30.yaml)。
+- 候选窗口：实际播期前后各 30 天，共 61 个候选日期。
+- 信息边界与 ±14 天实验一致：2023-03-01 前使用 2023 实测天气，
+  之后使用同站点 2014–2022 历史天气情景。
+- 三模型平均结果：
+  - AquaCrop：窗口覆盖率 0.710，最优日 regret 0.773 Mg/ha，
+    相对实际播期增益 -0.067 Mg/ha。
+  - APSIM：窗口覆盖率 0.907，最优日 regret 0.222 Mg/ha，
+    相对实际播期增益 +1.454 Mg/ha。
+  - DSSAT：窗口覆盖率 0.475，最优日 regret 0.877 Mg/ha，
+    相对实际播期增益 +2.322 Mg/ha。
+- 关键变化：MOH2 在 APSIM 和 DSSAT 下的最优推荐日大幅后移，
+  相对实际播期的增益显著增加；AquaCrop 在 INH1 的最优日明显前移。
+  说明候选窗口宽度本身就是重要实验设定，不能把 ±14 天结果解释为全年最优播期。
+- 结论：±30 天扩展揭示了更强的模型间差异和窗口敏感性，但仍属于
+  仿真闭环内的回顾式诊断，不是田间增产证明。
+
+证据：
+[AquaCrop 报告](../outputs/experiments/g2f_forecast_demo_radius30/forecast/report.md)、
+[APSIM 报告](../outputs/experiments/g2f_apsim_forecast_demo_radius30/forecast/report.md)、
+[DSSAT 报告](../outputs/experiments/g2f_dssat_forecast_demo_radius30/forecast/report.md)。
+
+## 2026-09-30 · APSIM 回顾式播期预测 Demo
+
+状态：已完成；回顾式技术可行性演示，不是业务化预测或增产证明。
+
+- 配置：[`g2f_apsim_forecast_demo.yaml`](../configs/g2f_apsim_forecast_demo.yaml)，
+  oracle 与校准参数来自 [`g2f_apsim_demo`](../configs/g2f_apsim_demo.yaml)。
+- 目标年份与信息截止：2023 年，2023-03-01。
+- 天气政策：目标年截止日前使用 2023 实测天气；截止日后使用同站点
+  2014–2022 年逐日历史天气情景，不使用目标年未来天气。
+- 环境与候选：INH1、MOH2、NYH2 的 2023 年，实际播期前后各 14 天、步长 1 天。
+- 记录：609 条情景仿真，键唯一；INH1 261 条成熟，MOH2 87 条成熟，
+  NYH2 113 条成熟、148 条 `not_matured`。失败/未成熟状态完整保留，
+  仅从汇总均值和分位数中排除。
+- 95% 推荐窗口覆盖率：INH1 42.1%、MOH2 7.1%、NYH2 100%，均值 49.7%。
+- 最优推荐日 oracle 遗憾：0.203、2.655、0.326 Mg/ha，均值 1.061 Mg/ha。
+- 相对 G2F 实际播期的 oracle 增益：+0.708、-0.211、-0.106 Mg/ha，
+  均值 +0.130 Mg/ha；环境间不稳定。
+- 阶段结论：APSIM 能完成同一无泄漏回顾式预测闭环，但 MOH2 的窗口重叠
+  与遗憾明显较差。土壤、水氮、品种和气象替代均为固定探索假设，三环境
+  样本不足以证明普适增益。
+
+证据：
+[报告](../outputs/experiments/g2f_apsim_forecast_demo/forecast/report.md)、
+[推荐结果](../outputs/experiments/g2f_apsim_forecast_demo/forecast/recommendations.csv)、
+[情景曲线](../outputs/experiments/g2f_apsim_forecast_demo/forecast/forecast_curves.csv)、
+[情景记录](../outputs/experiments/g2f_apsim_forecast_demo/forecast/scenario_results.csv)、
+[manifest](../outputs/experiments/g2f_apsim_forecast_demo/forecast/manifest.json)、
+[图表](../outputs/experiments/g2f_apsim_forecast_demo/forecast/figures/)。
+
+```bash
+.venv/bin/python -m snowwindow forecast --config configs/g2f_apsim_forecast_demo.yaml
+```
+
+## 2026-09-30 · DSSAT 回顾式播期预测 Demo
+
+状态：已完成；回顾式技术可行性演示，不是业务化预测或增产证明。
+
+- 配置：[`g2f_dssat_forecast_demo.yaml`](../configs/g2f_dssat_forecast_demo.yaml)，
+  oracle 与校准参数来自 [`g2f_dssat_demo`](../configs/g2f_dssat_demo.yaml)。
+- 目标年份与信息截止：2023 年，2023-03-01。
+- 天气政策：目标年截止日前使用 2023 实测天气；截止日后使用同站点
+  2014–2022 年逐日历史天气情景，不使用目标年未来天气。
+- 环境与候选：INH1、MOH2、NYH2 的 2023 年，实际播期前后各 14 天、步长 1 天。
+- 记录：609 条情景仿真，键唯一且全部报告成熟。记录仍保留状态字段以便审计。
+- 95% 推荐窗口覆盖率：INH1 50.0%、MOH2 15.4%、NYH2 96.6%，均值 54.0%。
+- 最优推荐日 oracle 遗憾：0.240、2.535、0.422 Mg/ha，均值 1.066 Mg/ha。
+- 相对 G2F 实际播期的 oracle 增益：+0.532、+0.136、-0.014 Mg/ha，
+  均值 +0.218 Mg/ha；环境间不稳定。
+- 阶段结论：DSSAT 能完成同一无泄漏回顾式预测闭环，但 MOH2 仍是主要误差源。
+  通用土壤/品种、雨养与氮肥情景、NASA POWER 气象替代以及三环境样本限制
+  均使其不能替代业务预报或直接推出增产结论。
+
+证据：
+[报告](../outputs/experiments/g2f_dssat_forecast_demo/forecast/report.md)、
+[推荐结果](../outputs/experiments/g2f_dssat_forecast_demo/forecast/recommendations.csv)、
+[情景曲线](../outputs/experiments/g2f_dssat_forecast_demo/forecast/forecast_curves.csv)、
+[情景记录](../outputs/experiments/g2f_dssat_forecast_demo/forecast/scenario_results.csv)、
+[manifest](../outputs/experiments/g2f_dssat_forecast_demo/forecast/manifest.json)、
+[图表](../outputs/experiments/g2f_dssat_forecast_demo/forecast/figures/)。
+
+```bash
+.venv/bin/python -m snowwindow forecast --config configs/g2f_dssat_forecast_demo.yaml
+```
 
 ## 2026-09-27 · DSSAT 原生 CERES-Maize 六环境闭环
 

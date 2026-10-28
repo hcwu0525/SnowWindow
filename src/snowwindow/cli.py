@@ -8,7 +8,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from snowwindow.config import ConfigError, load_config
+from snowwindow.config import ConfigError, load_config, save_config_snapshot
 
 COMMANDS = (
     "audit",
@@ -20,6 +20,7 @@ COMMANDS = (
     "simulate",
     "scan",
     "report",
+    "forecast",
     "run",
 )
 
@@ -40,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _run_stage(command: str, config) -> object:
     from snowwindow.data import audit_g2f, prepare_g2f
+    from snowwindow.forecast import forecast_stage
     from snowwindow.reporting import report_stage
     from snowwindow.scan import scan_stage
     from snowwindow.stages import (
@@ -58,6 +60,7 @@ def _run_stage(command: str, config) -> object:
         "simulate": simulate_stage,
         "scan": scan_stage,
         "report": report_stage,
+        "forecast": forecast_stage,
     }
     if command == "run":
         if not (config.experiment_dir / "manifests/prepare_manifest.json").is_file():
@@ -72,22 +75,26 @@ def _run_stage(command: str, config) -> object:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        config = load_config(args.config)
+        if args.command not in ("audit", "catalog"):
+            save_config_snapshot(config)
+    except ConfigError as exc:
+        print(f"configuration error: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"configuration snapshot failed: {exc}", file=sys.stderr)
+        return 1
     if args.command == "catalog":
         from snowwindow.catalog import build_catalog
 
         try:
-            _, _, catalog_path = build_catalog(Path.cwd() / "outputs")
+            _, _, catalog_path = build_catalog(config.output_dir)
         except Exception as exc:
             print(f"catalog failed: {exc}", file=sys.stderr)
             return 1
         print(f"catalog: {catalog_path}")
         return 0
-    try:
-        config = load_config(args.config)
-    except ConfigError as exc:
-        print(f"configuration error: {exc}", file=sys.stderr)
-        return 2
-
     try:
         result = _run_stage(args.command, config)
     except Exception as exc:

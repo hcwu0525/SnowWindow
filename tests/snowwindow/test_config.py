@@ -266,7 +266,13 @@ def test_bundled_configs_encode_required_experiment_policies() -> None:
     assert demo.selection.evaluation_years == (2023,)
     assert demo.simulation.scan_all_dates is True
     assert demo.simulation.options["scan_horizon"] == "cross_year"
-    assert demo.simulation.options["continuation_weather_by_environment"] == {}
+    assert demo.simulation.options["continuation_weather_by_environment"] == {
+        "INH1_2022": "INH1_2023",
+        "MOH2_2022": "MOH2_2023",
+        "NYH2_2022": "NYH2_2023",
+        "INH1_2023": "INH1_2024",
+        "NYH2_2023": "NYH2_2024",
+    }
     assert set(demo.simulation.parameter_sets) == {"default", "calibrated"}
     assert demo.model.parameters["grain_standard_moisture_fraction"] == 0.155
     assert demo.model.parameters["default_soil_texture"] == "Loam"

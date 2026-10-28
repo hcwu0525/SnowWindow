@@ -7,7 +7,6 @@ import json
 import os
 import time
 import uuid
-from calendar import isleap
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -19,21 +18,22 @@ import pandas as pd
 
 from snowwindow.adapters import ModelAdapter, resolve_model_adapter
 from snowwindow.config import ExperimentConfig
-from snowwindow.domain import ScanRequestStrategy, SimulationRequest, WeatherStrategy
+from snowwindow.domain import ScanRequestStrategy, SimulationRequest
 from snowwindow.experiment import (
     build_simulation_request,
-    load_cached_power_weather,
-    load_legacy_crossyear_weather,
+    load_g2f_weather,
     load_prepared_tables,
     select_representative_units,
+    weather_failure_result,
 )
+from snowwindow.weather import WEATHER_POLICY, weather_end_for_year
 
 
 def calendar_dates(year: int) -> tuple[date, ...]:
     return tuple(
         timestamp.date()
         for timestamp in pd.date_range(
-            date(year, 1, 1), periods=366 if isleap(year) else 365
+            date(year, 1, 1), weather_end_for_year(year)
         )
     )
 
@@ -171,12 +171,7 @@ def native_scan_requests(
     requests: list[SimulationRequest] = []
     for unit in units.sort_values("management_unit_id").to_dict("records"):
         environment_id = str(unit["environment_id"])
-        loader = (
-            load_legacy_crossyear_weather
-            if capabilities.weather_strategy is WeatherStrategy.LEGACY_CROSSYEAR
-            else load_cached_power_weather
-        )
-        weather, _ = loader(config, environment_id)
+        weather, _ = load_g2f_weather(config, environment_id)
         environment = environments.loc[environment_id].to_dict()
         environment["environment_id"] = environment_id
         soil = soils.loc[environment_id].to_dict()
@@ -230,7 +225,6 @@ def native_scan_requests(
                     end_date = min(
                         base.end_date, planting_date + timedelta(days=horizon)
                     )
-                    count = (end_date - base.start_date).days + 1
                     requests.append(
                         replace(
                             base,
@@ -243,7 +237,21 @@ def native_scan_requests(
                             ),
                             environment=replace(
                                 base.environment,
-                                weather=base.environment.weather[:count],
+                                weather=tuple(
+                                    row for row in base.environment.weather
+                                    if row.date <= end_date
+                                ),
+                                metadata={
+                                    **dict(base.environment.metadata),
+                                    "planned_end_date": (
+                                        planting_date + timedelta(days=horizon)
+                                    ).isoformat(),
+                                    "simulation_end_date": end_date.isoformat(),
+                                    "weather_horizon_truncated": (
+                                        end_date
+                                        < planting_date + timedelta(days=horizon)
+                                    ),
+                                },
                             ),
                             end_date=end_date,
                         )
@@ -285,14 +293,24 @@ def run_simulation_requests(
 ) -> dict[str, Any]:
     """Run scan requests, grouping adapters which support batch execution."""
 
+    results = {}
+    valid_requests = []
+    for request in requests:
+        failure = weather_failure_result(request, model)
+        if failure is None:
+            valid_requests.append(request)
+        else:
+            results[request.request_id] = failure
     run_many = getattr(model, "run_many", None)
     if not callable(run_many):
-        return {request.request_id: model.run(request) for request in requests}
+        results.update(
+            (request.request_id, model.run(request)) for request in valid_requests
+        )
+        return results
     grouped: dict[tuple[str, str], list[SimulationRequest]] = {}
-    for request in requests:
+    for request in valid_requests:
         key = (request.environment.environment_id, request.parameter_set_id)
         grouped.setdefault(key, []).append(request)
-    results: dict[str, Any] = {}
     ordered_groups = [grouped[key] for key in sorted(grouped)]
     with ThreadPoolExecutor(max_workers=workers) as executor:
         for batch_results in executor.map(run_many, ordered_groups):
@@ -329,7 +347,11 @@ def scan_stage(
         }
     adapter_cache = getattr(model, "cache_key", None)
     keys = (
-        {request.request_id: adapter_cache(request) for request in requests}
+        {
+            request.request_id: adapter_cache(request)
+            for request in requests
+            if weather_failure_result(request, model) is None
+        }
         if callable(adapter_cache)
         else {}
     )
@@ -337,7 +359,8 @@ def scan_stage(
         outstanding = [
             request
             for request in requests
-            if keys.get(request.request_id) not in completed
+            if request.request_id in keys
+            and keys[request.request_id] not in completed
         ]
         start = time.perf_counter()
         for index, request in enumerate(outstanding, start=1):
@@ -370,6 +393,10 @@ def scan_stage(
             "failure_reason": result.failure_reason,
             "cache_key": result.diagnostics.get("cache_key"),
             **dict(result.summary),
+            "simulation_end_date": request.end_date.isoformat(),
+            "weather_horizon_truncated": request.environment.metadata.get(
+                "weather_horizon_truncated"
+            ),
         }
         row["planting_date"] = request.management.planting_date
         rows.append(row)
@@ -418,7 +445,8 @@ def scan_stage(
                 .shape[0]
             ),
             "parameter_sets": sorted(config.simulation.parameter_sets),
-            "weather_source": "NASA POWER AG cached full-year and continuation forcing",
+            "weather_source": "G2F full-year weather",
+            "weather_policy": WEATHER_POLICY,
             "execution_mode": f"native {model.name} adapter",
             "adapter_name": model.name,
             "adapter_version": model.version,

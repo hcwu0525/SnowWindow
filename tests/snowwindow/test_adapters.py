@@ -124,7 +124,7 @@ def test_builtin_model_capabilities_declare_calibration_contracts() -> None:
         FoldStrategy.HELD_YEAR,
         FoldStrategy.LEAVE_SITE,
     )
-    assert aquacrop.weather_strategy is WeatherStrategy.CACHED_POWER
+    assert aquacrop.weather_strategy is WeatherStrategy.G2F
     assert aquacrop.scan_request_strategy is ScanRequestStrategy.PER_DATE
 
     assert apsim.phenology_parameter.name == "juvenile_tt"
@@ -137,7 +137,7 @@ def test_builtin_model_capabilities_declare_calibration_contracts() -> None:
     assert apsim.yield_parameter.fine_step == 0.02
     assert apsim.supports_site_calibration is False
     assert apsim.supported_folds == (FoldStrategy.HELD_YEAR,)
-    assert apsim.weather_strategy is WeatherStrategy.LEGACY_CROSSYEAR
+    assert apsim.weather_strategy is WeatherStrategy.G2F
     assert apsim.scan_request_strategy is ScanRequestStrategy.PER_DATE
 
     assert dssat.phenology_parameter.name == "P1"
@@ -150,7 +150,7 @@ def test_builtin_model_capabilities_declare_calibration_contracts() -> None:
     assert dssat.yield_parameter.fine_step == 10.0
     assert dssat.supports_site_calibration is False
     assert dssat.supported_folds == (FoldStrategy.HELD_YEAR,)
-    assert dssat.weather_strategy is WeatherStrategy.LEGACY_CROSSYEAR
+    assert dssat.weather_strategy is WeatherStrategy.G2F
     assert dssat.scan_request_strategy is ScanRequestStrategy.SLICE_WEATHER_HORIZON
 
 

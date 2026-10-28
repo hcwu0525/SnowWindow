@@ -257,7 +257,7 @@ class AquaCropAdapter:
         site_phenology_parameter="phenology_scale_site",
         site_yield_parameter="HI0_site",
         supported_folds=(FoldStrategy.HELD_YEAR, FoldStrategy.LEAVE_SITE),
-        weather_strategy=WeatherStrategy.CACHED_POWER,
+        weather_strategy=WeatherStrategy.G2F,
         scan_request_strategy=ScanRequestStrategy.PER_DATE,
         report_notes=(
             "- 开花日期采用 AquaCrop `HIstart` 首次跨越的日末代理，并非独立花粉事件。",

@@ -402,7 +402,7 @@ class APSIMAdapter:
             "grain_number_scale", 1.0, (0.5, 1.5, 0.1), 0.02
         ),
         supported_folds=(FoldStrategy.HELD_YEAR,),
-        weather_strategy=WeatherStrategy.LEGACY_CROSSYEAR,
+        weather_strategy=WeatherStrategy.G2F,
         scan_request_strategy=ScanRequestStrategy.PER_DATE,
         report_notes=(
             "- 开花日期采用 APSIM Maize 的 `Flowering` 事件，"

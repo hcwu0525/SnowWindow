@@ -8,7 +8,9 @@ from pathlib import Path
 import pandas as pd
 import pyarrow
 import pytest
+import yaml
 
+from snowwindow.cli import main
 from snowwindow.config import (
     CalibrationConfig,
     ExperimentConfig,
@@ -32,6 +34,12 @@ from snowwindow.data import (
     prepare_g2f,
     resolve_coordinates,
     validate_training_natural_keys,
+)
+from snowwindow.domain import (
+    ModelCapabilities,
+    RunStatus,
+    SimulationRequest,
+    SimulationResult,
 )
 
 EXPECTED_ARTIFACTS = {
@@ -902,8 +910,146 @@ def test_crossyear_scan_uses_only_explicit_continuation_mapping(
     )
 
 
+def test_minimal_cli_pipeline_keeps_inputs_and_failed_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise real stages with synthetic inputs and a deterministic adapter."""
+    data_dir = tmp_path / "inputs"
+    _write_fixture_data(data_dir)
+    original_inputs = {
+        path: path.read_bytes() for path in data_dir.rglob("*.csv")
+    }
+    config_path = tmp_path / "pipeline.yaml"
+    document = {
+        "experiment_id": "pipeline",
+        "data_dir": "inputs",
+        "output_dir": "custom-results",
+        "model": {"name": "aquacrop", "parameters": {}},
+        "selection": {
+            "calibration_years": [2022],
+            "evaluation_years": [2024],
+            "environments": ["IAH1_2022", "IAH1_2024"],
+            "allow_assumed_rainfed": True,
+            "exclude_default_soil_from_calibration": False,
+        },
+        "calibration": {
+            "phenology_grid": [0.9, 1.1, 0.1],
+            "phenology_fine_step": 0.1,
+            "yield_grid": [0.4, 0.5, 0.1],
+            "yield_fine_step": 0.1,
+        },
+        "simulation": {
+            "scan_fractions": [0.95],
+            "workers": 1,
+            "scan_all_dates": True,
+            "parameter_sets": {
+                "default": {},
+                "calibrated": {"source": "calibration"},
+            },
+            "forecast_radius_days": 1,
+        },
+    }
+    config_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    class FixtureAdapter:
+        name = "fixture"
+        version = "1"
+        capabilities = ModelCapabilities(display_name="Fixture model")
+
+        def run(self, request: SimulationRequest) -> SimulationResult:
+            failed = request.management.planting_date.day == 3
+            return SimulationResult(
+                request_id=request.request_id,
+                adapter_name=self.name,
+                adapter_version=self.version,
+                status=RunStatus.NOT_MATURED if failed else RunStatus.MATURED,
+                summary={
+                    "simulation_end_date": "2025-04-30",
+                    "flowering_proxy_dap": (
+                        None
+                        if failed
+                        else 62.0
+                        * float(request.model_parameters.get("phenology_scale", 1.0))
+                    ),
+                    "dry_yield_mg_ha": (
+                        None
+                        if failed
+                        else 8.0 * float(request.model_parameters.get("HI0", 0.48))
+                    ),
+                },
+                failure_reason="synthetic non-maturity" if failed else None,
+            )
+
+    adapter = FixtureAdapter()
+    for module in ("stages", "scan", "forecast"):
+        monkeypatch.setattr(
+            f"snowwindow.{module}.resolve_model_adapter", lambda config: adapter
+        )
+    monkeypatch.setattr(
+        "snowwindow.scan.calendar_dates",
+        lambda year: tuple(date(year, 5, day) for day in (1, 2, 3)),
+    )
+    monkeypatch.chdir(tmp_path)
+    output = tmp_path / "custom-results"
+    root = output / "experiments/pipeline"
+    assert main(["audit", "--config", str(config_path)]) == 0
+    assert not output.exists()
+    for stage in (
+        "prepare", "baseline", "calibrate", "validate", "scan", "report", "run"
+    ):
+        assert main([stage, "--config", str(config_path)]) == 0, stage
+    assert not (root / "forecast").exists(), "run must not implicitly forecast"
+    assert (root / "config.yaml").is_file()
+    assert (root / "report/report.md").is_file()
+    baseline = pd.read_parquet(root / "baseline/summary.parquet")
+    assert pd.to_datetime(baseline["simulation_end_date"]).le(
+        pd.Timestamp("2024-11-10")
+    ).all()
+    parameters = pd.read_parquet(root / "calibration/parameters.parquet")
+    held = parameters.loc[parameters["fold"].eq("held_year")].iloc[0]
+    assert all("2022" in unit for unit in json.loads(held["train_ids"]))
+    assert all("2024" in unit for unit in json.loads(held["test_ids"]))
+    summary = pd.read_parquet(root / "scan/summary.parquet")
+    failed = summary.loc[summary["status"].eq("not_matured")]
+    assert len(summary) == 12
+    assert len(failed) == 4
+    assert pd.to_datetime(summary["simulation_end_date"]).le(
+        pd.Timestamp("2024-11-10")
+    ).all()
+    scan_manifest = json.loads((root / "scan/manifest.json").read_text())
+    assert scan_manifest["weather_source"] == "G2F full-year weather"
+    assert scan_manifest["weather_policy"]["end_date"] == "2024-11-10"
+    assert failed["failure_reason"].eq("synthetic non-maturity").all()
+    assert failed["dry_yield_mg_ha"].isna().all()
+
+    document["experiment_id"] = "pipeline_forecast"
+    document["selection"]["source_experiment_id"] = "pipeline"
+    forecast_config = tmp_path / "forecast.yaml"
+    forecast_config.write_text(yaml.safe_dump(document), encoding="utf-8")
+    assert main(["forecast", "--config", str(forecast_config)]) == 0
+    forecast_root = output / "experiments/pipeline_forecast/forecast"
+    scenarios = pd.read_parquet(forecast_root / "scenario_results.parquet")
+    assert len(scenarios) == 6
+    assert scenarios["status"].eq("not_matured").sum() == 2
+    assert pd.to_datetime(scenarios["simulation_end_date"]).le(
+        pd.Timestamp("2024-11-10")
+    ).all()
+    assert (forecast_root / "report.md").is_file()
+    assert main(["catalog", "--config", str(forecast_config)]) == 0
+    catalog = json.loads((output / "experiments/catalog.json").read_text())
+    assert {entry["experiment_id"] for entry in catalog} == {
+        "pipeline", "pipeline_forecast"
+    }
+    assert not (tmp_path / "outputs").exists()
+    assert {
+        path: path.read_bytes() for path in data_dir.rglob("*.csv")
+    } == original_inputs
+
+
 @pytest.mark.integration
 def test_real_data_audit_measures_known_g2f_coverage(tmp_path: Path) -> None:
+    if not (Path("data") / "Training_data").is_dir():
+        pytest.skip("local G2F data are not distributed with the repository")
     config = _config(Path("data").resolve(), tmp_path / "unused-output")
 
     audit = audit_g2f(config)

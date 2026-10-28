@@ -4,6 +4,40 @@
 范围：本仓库 `data/` 下的实际文件。
 返回[文档目录](README.md)。
 
+本页的行数与结论保留原始核对日期；以下必需文件清单于 2026-10-27
+对照 [SOURCE_CATALOG](../src/snowwindow/data/sources.py) 补充核对。
+当前文件清单对应 G2F 2024 Maize Genotype by Environment Prediction Competition
+发布数据（DOI：`10.25739/78mn-4394`）。官方入口、许可、下载步骤与首次
+校验见[数据下载指南](data-download.md)；文件清单对应不代表本地副本已经与
+官方原件逐文件比对 SHA256。项目不自动下载；原文件只读且不入 Git。
+文中 `outputs/` 证据链接均为本地产物，clone 不包含，也不表示本次重新实验。
+
+## 必需的 13 个源文件
+
+`source_paths` 会检查全部 13 项存在，`build_source_inventory` 对全部文件
+记录大小与 SHA256。`excluded_from_model_inputs` 不是可省略文件：
+这些文件不进入模型输入表，但仍需用于完整性与来源审计。
+路径相对配置 `data_dir`：
+
+| 文件 | SOURCE_CATALOG 角色 |
+| --- | --- |
+| `Training_data/1_Training_Trait_Data_2014_2023.csv` | `model_input` |
+| `Training_data/2_Training_Meta_Data_2014_2023.csv` | `model_input` |
+| `Training_data/3_Training_Soil_Data_2015_2023.csv` | `model_input` |
+| `Training_data/4_Training_Weather_Data_2014_2023_full_year.csv` | `model_input` |
+| `Training_data/4_Training_Weather_Data_2014_2023_seasons_only.csv` | `excluded_from_model_inputs` |
+| `Training_data/6_Training_EC_Data_2014_2023.csv` | `excluded_from_model_inputs` |
+| `Testing_data/1_Submission_Template_2024.csv` | `model_input` |
+| `Testing_data/2_Testing_Meta_Data_2024.csv` | `model_input` |
+| `Testing_data/3_Testing_Soil_Data_2024.csv` | `model_input` |
+| `Testing_data/4_Testing_Weather_Data_2024_full_year.csv` | `model_input` |
+| `Testing_data/4_Testing_Weather_Data_2024_seasons_only.csv` | `excluded_from_model_inputs` |
+| `Testing_data/6_Testing_EC_Data_2024.csv` | `excluded_from_model_inputs` |
+| `Testing_data/7_Testing_Observed_Values.csv` | `model_input` |
+
+不要求基因组文件、根目录 `train/test_merged_data.csv`、
+`train/test_6D_features.csv`；它们不在当前输入契约内。不要用它们替代缺失源表。
+
 ## 1. 文件与覆盖范围
 
 下面的行数为本次只读解析 CSV 的数据行数，不含表头；
@@ -94,7 +128,9 @@ dry_yield_mg_ha =
 
 ## 3. 逐日天气
 
-三种模型均应使用逐日驱动，不应把生长季汇总特征直接当成日值。
+三种模型均使用 G2F `full_year` 原始分表标准化的逐日驱动，不应把生长季
+汇总特征直接当成日值。2026-10-27 统一策略不读取 legacy POWER CSV 或其
+provenance；字段名含 POWER 风格变量名不等于程序另行读取 POWER 缓存。
 
 | G2F 字段 | 当前项目单位 | AquaCrop-OSPy | APSIM 常见映射 |
 | --- | --- | --- | --- |
@@ -133,17 +169,35 @@ APSIM 和 DSSAT 已有本地适配器；上表的 APSIM 列描述常见变量语
 
 - 训练全年天气缺少 `TXH2_2015`、`TXH2_2016`、`TXH2_2017`。
 - 测试全年天气只有 2024-01-01 至 2024-11-10，共 315 天/环境；
-  2024-07-12 至 2024-07-14 另有核心变量缺测。文件名不能证明全年完整。
-- 跨年播期模拟还需要下一年的连续驱动；不能拼接其他站点、
-  重复当年天气或把缺测填零而不说明。
+  保留闰日 2/29。2024-07-12 至 2024-07-14 另有核心变量缺测。
+  文件名不能证明全年完整，缺测不得补零、外部替代或改标成熟。
+- 跨年播期模拟还需要下一年的同站点 G2F 连续驱动；只允许显式环境映射，
+  不拼接其他站点、重复当年天气或自行补齐缺测。
 - 当前源目录显式排除 `seasons_only` 文件作为模型输入。
-- 六环境演示扫描使用缓存的同坐标 NASA POWER 补充驱动；
+- 历史六环境演示扫描使用缓存的同坐标 NASA POWER 补充驱动；
   这与竞赛文件的覆盖审计是两条不同的数据路径。
 - DSSAT 六环境扫描同样使用上述跨年补充驱动；4,380 条模拟均成熟，
   不证明 2024 测试文件已补全，也不代表非实际播期已有观测。
 
 证据：[refined 数据审计](../outputs/experiments/g2f_aquacrop_refined/audit/data_audit.json)
 及[演示报告](../outputs/experiments/g2f_demo/report/report.md)。
+
+当前统一策略（2026-10-27）：以上六环境 POWER 驱动与数值只描述历史产物，
+不表示当前策略已经验证通过。三模型从本实验 `normalized/weather.parquet`
+读取当前环境；只有 `simulation.scan_horizon: cross_year` 且
+`continuation_weather_by_environment` 显式映射下一年同站点 G2F 环境时
+才追加对应记录，无映射不自动替代，不需要任何外部天气缓存。
+模拟受实际可用截止日限制并记录尾部截断，内部缺日期/核心值继续保留失败。
+2024 相关模拟与 scan/forecast 候选播期最晚为 2024-11-10，不能用延长
+驱动掩盖缺测或未成熟状态。此日期不是 forecast 信息截止日；预测仍按配置
+信息边界使用 G2F 历史同站点情景，不用目标年未来实测选参。
+
+三个主 demo 显式映射 INH1/MOH2/NYH2 的 2022→2023，以及 INH1/NYH2 的
+2023→2024；本地没有 `MOH2_2024`，不得伪造。refined/history 保留空映射，
+其跨年缺口未解决，映射到不完整的 2024 也不代表审计通过。
+历史驱动、模拟时限与当前实现不同，必须新建 ID，不能混用旧快照、oracle
+或结果；新快照自动记录 `weather_policy`，见[配置指南](configuration.md#配置快照与重跑)。
+模型结果缓存及断点恢复继续保留，不等于天气缓存。
 
 ## 4. 土壤能够提供什么
 

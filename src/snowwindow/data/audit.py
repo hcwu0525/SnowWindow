@@ -12,8 +12,13 @@ from typing import Any
 import pandas as pd
 
 from snowwindow.config import ExperimentConfig
-from snowwindow.data.normalization import SEVERE_ISSUE_RULE, valid_core_mask, weather_dates
+from snowwindow.data.normalization import (
+    SEVERE_ISSUE_RULE,
+    valid_core_mask,
+    weather_dates,
+)
 from snowwindow.data.sources import CORE_WEATHER_COLUMNS, DataPreparationError
+from snowwindow.weather import G2F_END_DATE, weather_end_for_year
 
 
 def _year_from_environment(environment_id: str) -> int | None:
@@ -44,15 +49,19 @@ def audit_weather_coverage(weather: pd.DataFrame) -> dict[str, dict[str, Any]]:
         observed_years = sorted({value.year for value in environment_dates})
         aligned = source_year is None or observed_years == [source_year]
         year = source_year if source_year is not None else observed_years[0]
+        required_end = weather_end_for_year(year)
         expected = {
             timestamp.date()
-            for timestamp in pd.date_range(f"{year}-01-01", f"{year}-12-31")
+            for timestamp in pd.date_range(f"{year}-01-01", required_end)
         }
         observed = set(environment_dates)
         missing_dates = sorted(expected - observed)
         gap_dates = sorted(
             environment_dates.loc[
-                [index for index in indexes if not bool(valid_core.loc[index])]
+                [
+                    index for index in indexes
+                    if not bool(valid_core.loc[index]) and dates.loc[index] in expected
+                ]
             ].tolist()
         )
         date_calendar_complete = aligned and not missing_dates
@@ -62,6 +71,14 @@ def audit_weather_coverage(weather: pd.DataFrame) -> dict[str, dict[str, Any]]:
             "last_date": max(observed).isoformat(),
             "row_count": len(indexes),
             "environment_year_aligned": aligned,
+            "required_end_date": required_end.isoformat(),
+            "full_year_calendar_complete": (
+                aligned
+                and len(observed) == len(
+                    pd.date_range(f"{year}-01-01", f"{year}-12-31")
+                )
+                and bool(valid_core.loc[indexes].all())
+            ),
             "date_calendar_complete": date_calendar_complete,
             "calendar_complete": date_calendar_complete and not gap_dates,
             "missing_calendar_dates": [
@@ -99,6 +116,8 @@ def _scan_weather_reason(
         return None
     if horizon != "cross_year":
         raise DataPreparationError(f"unsupported scan_horizon: {horizon}")
+    if year == G2F_END_DATE.year:
+        return None
     mapping = config.simulation.options.get(
         "continuation_weather_by_environment", {}
     )
@@ -112,6 +131,7 @@ def _scan_weather_reason(
     continuation = weather_coverage.get(continuation_id)
     if (
         continuation is None
+        or continuation_id != f"{environment_id.rsplit('_', 1)[0]}_{year + 1}"
         or continuation.get("year") != year + 1
         or not continuation.get("calendar_complete", False)
     ):

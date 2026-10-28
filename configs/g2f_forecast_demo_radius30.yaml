@@ -1,0 +1,45 @@
+# 2026-10-27: G2F full_year same-site historical scenarios only; no legacy POWER.
+# 2024 simulations/candidates stop at 2024-11-10, NOT the forecast information cutoff.
+# Keep 2023 evaluation/cutoff and scientific parameters; use new forecast/source IDs.
+experiment_id: g2f_forecast_demo_radius30
+data_dir: ../data
+output_dir: ../outputs
+
+model:
+  name: aquacrop
+  parameters:
+    crop: MaizeGDD
+    model_version: "3.1.0"
+    grain_standard_moisture_fraction: 0.155
+    default_soil_texture: Loam
+
+selection:
+  environments:
+    - INH1_2023
+    - MOH2_2023
+    - NYH2_2023
+  calibration_years: [2022]
+  evaluation_years: [2023]
+  allow_assumed_rainfed: true
+  exclude_default_soil_from_calibration: true
+  source_experiment_id: g2f_demo
+
+calibration:
+  phenology_grid: [0.8, 1.2, 0.02]
+  phenology_fine_step: 0.005
+  yield_grid: [0.35, 0.55, 0.01]
+  yield_fine_step: 0.0025
+
+simulation:
+  scan_fractions: [0.95]
+  scan_all_dates: true
+  workers: 1
+  parameter_sets:
+    calibrated:
+      source: calibration
+  forecast_cutoff_year: 2023
+  forecast_cutoff_month: 3
+  forecast_cutoff_day: 1
+  forecast_radius_days: 30
+  forecast_step_days: 1
+  forecast_fraction: 0.95

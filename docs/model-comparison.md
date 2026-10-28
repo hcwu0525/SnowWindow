@@ -2,6 +2,19 @@
 
 项目实现与实验状态核对日期：2026-09-27。返回[文档目录](README.md)。
 
+本文保留原核对日期与历史结论；`outputs/` 链接都是 clone 不包含的本地证据。
+2026-10-27 补充的当前安装、G2F 统一天气策略和复现边界见
+[快速上手](getting-started.md) 与 [配置清单](../configs/README.md)。
+三模型现统一只用 G2F `full_year` 原始分表标准化天气，不读取 legacy
+POWER CSV/provenance，不需要外部天气缓存；APSIM/DSSAT 引擎仍独立安装。
+仅 `scan_horizon: cross_year` 加显式下一年同站点 G2F 环境映射才追加记录；
+无映射不自动替代，实际天气截止导致尾部截断须记录，内部缺测仍失败。
+2024 相关模拟与 scan/forecast 候选播期不晚于 2024-11-10（315 天，
+保留 2/29）；7/12–7/14 核心缺测不得补零、外部替代或改标成熟。
+这不是 forecast 信息截止日，预测仍按既有信息边界使用历史同站点情景。
+模型结果缓存与断点恢复保留；历史成功不追认为新策略通过，
+必须新 ID、新快照，不能混用旧产物。以下历史数值与核对日期不变。
+
 本文将 FAO AquaCrop 理论框架、AquaCrop-OSPy 3.1.0 实现、
 APSIM Next Generation 玉米模型、DSSAT CERES-Maize，以及
 SnowWindow 当前适配范围分开描述。

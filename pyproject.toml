@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "snowwindow"
 version = "0.1.0"
 description = "Reproducible planting-window experiments for G2F crop simulations"
+readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "aquacrop==3.1.0",
@@ -18,8 +19,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8,<9",
-    "ruff>=0.16,<0.17",
+    "pytest>=8,<10",
+    "ruff==0.16.8",
 ]
 
 [project.scripts]
@@ -31,7 +32,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 markers = [
-    "integration: read-only tests against the supplied real G2F data",
+    "integration: real-model or supplied-data checks (temporary outputs only)",
 ]
 
 [tool.ruff]
