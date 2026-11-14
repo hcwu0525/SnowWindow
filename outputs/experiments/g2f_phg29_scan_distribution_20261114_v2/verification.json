@@ -1,0 +1,22 @@
+{
+  "checks_passed": [
+    "frozen_input_fingerprints",
+    "source_unchanged",
+    "exact_grid_counts",
+    "no_duplicate_keys",
+    "all_174_fields_documented",
+    "zip_crc_and_members",
+    "extracted_file_hashes_and_sizes",
+    "extracted_read_filter_plot_join_example",
+    "G2F_trait_fingerprints_and_source_row",
+    "parquet_frame_equal",
+    "core_csv_counts"
+  ],
+  "archive": "g2f_phg29_scan_analysis_v1.zip",
+  "sha256": "b796370a886337ef36a57331630becd0106e14329c79e4f13198b3565b47683b",
+  "size_bytes": 19126340,
+  "payload_files": 97,
+  "source_code_mismatches": [
+    "scripts/run_cultivar_quick_calibration.py"
+  ]
+}
